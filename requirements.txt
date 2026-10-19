@@ -1,0 +1,17 @@
+fastapi
+uvicorn[standard]
+SQLAlchemy>=2.0
+pydantic-settings
+python-multipart
+PyJWT
+polars
+fastexcel
+openpyxl
+xlsxwriter
+reportlab
+alembic
+PyMySQL
+cryptography
+# khusus pengujian
+pytest
+httpx
