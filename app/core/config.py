@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./dev.db"
     max_upload_mb: int = 50
     storage_dir: Path = Path("storage/uploads")
+    # Arsip file upload (PRD F22-F24). Penyimpanan terpisah dari folder kerja upload sementara.
+    archive_dir: Path = Path("storage/archive")
+    archive_trash_days: int = 90  # masa tunggu di tempat sampah sebelum boleh hapus permanen
     cors_origins: str = "http://localhost:3000"
 
     # Autentikasi

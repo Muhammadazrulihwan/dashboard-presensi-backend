@@ -41,6 +41,14 @@ class UploadStatus(str, enum.Enum):
     deleted = "deleted"
 
 
+class ArchiveStatus(str, enum.Enum):
+    """Status file arsip (PRD F22-F24): aktif, di tempat sampah, atau sudah dihapus permanen."""
+
+    aktif = "aktif"
+    sampah = "sampah"
+    dihapus = "dihapus"
+
+
 class Departments(Base):
     """Daftar departemen baku. Pemeriksaan hak akses memakai kode ini, bukan teks bebas."""
 
@@ -72,6 +80,30 @@ class Upload(Base):
     row_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[UploadStatus] = mapped_column(Enum(UploadStatus, native_enum=False, length=20), default=UploadStatus.pending)
     error_summary: Mapped[dict | None] = mapped_column(JsonType, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class SourceKind(str, enum.Enum):
+    """Empat sumber data presensi (PRD bagian 3)."""
+
+    activity = "activity"
+    report = "report"
+    timeoff = "timeoff"
+    approval = "approval"
+
+
+class UploadFile(Base):
+    """Satu file dalam paket upload empat sumber. Satu paket Upload bisa memuat beberapa file."""
+
+    __tablename__ = "upload_files"
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True)
+    upload_id: Mapped[int] = mapped_column(ForeignKey("uploads.id", ondelete="CASCADE"), index=True)
+    jenis_sumber: Mapped[str] = mapped_column(String(20))  # activity | report | timeoff | approval
+    nama_file: Mapped[str] = mapped_column(String(255))
+    stored_path: Mapped[str] = mapped_column(Text)
+    row_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Hasil validasi: {"ok": bool, "warnings": [...], "errors": [...], "mapped_columns": [...]}
+    validasi: Mapped[dict | None] = mapped_column(JsonType, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -117,10 +149,151 @@ class Attendance(Base):
     durasi_kerja: Mapped[float | None] = mapped_column(Float, nullable=True)  # jam
     menit_lembur: Mapped[int] = mapped_column(Integer, default=0)
 
+    # --- Kolom Rekap Absensi terpadu (PRD bagian 4, Rilis B). Nullable agar data template lama tetap valid. ---
+    jam_kerja_nyata: Mapped[float | None] = mapped_column(Float, nullable=True)  # Real Working Hour (jam)
+    jumlah_ketukan: Mapped[int | None] = mapped_column(Integer, nullable=True)  # banyak clock in/out per hari
+    clock_out_hilang: Mapped[bool] = mapped_column(Boolean, default=False)
+    clock_in_hilang: Mapped[bool] = mapped_column(Boolean, default=False)
+    sumber: Mapped[str | None] = mapped_column(String(200), nullable=True)  # jejak asal nilai, mis. "activity+approval"
+    dikoreksi: Mapped[bool] = mapped_column(Boolean, default=False)
+    koreksi_alasan: Mapped[str | None] = mapped_column(Text, nullable=True)
+    koreksi_approver: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    koreksi_setelah_tutup: Mapped[bool] = mapped_column(Boolean, default=False)
+    izin_kode: Mapped[str | None] = mapped_column(String(20), nullable=True)  # S, cuti, izin
+    izin_nama: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    izin_tipe: Mapped[str | None] = mapped_column(String(20), nullable=True)  # Full Day / per jam
+    selisih_report: Mapped[str | None] = mapped_column(Text, nullable=True)  # pembanding Report Attendance
+    status_report: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
     __table_args__ = (
         UniqueConstraint("nik", "tanggal", name="uq_attendance_nik_tanggal"),
         Index("ix_attendance_tanggal_dept", "tanggal", "departemen"),
         Index("ix_attendance_nik", "nik"),
+    )
+
+
+# ========== Data mentah empat sumber (PRD bagian 8) ==========
+
+class RawActivity(Base):
+    """Satu ketukan clock in/out mentah dari file Activity."""
+
+    __tablename__ = "raw_activity"
+    id: Mapped[int] = mapped_column(BigId, primary_key=True)
+    upload_id: Mapped[int] = mapped_column(ForeignKey("uploads.id", ondelete="CASCADE"), index=True)
+    employee_id: Mapped[str] = mapped_column(String(30))
+    tanggal: Mapped[date] = mapped_column(Date)
+    waktu_menit: Mapped[int | None] = mapped_column(Integer, nullable=True)  # menit sejak 00:00
+    tipe: Mapped[str | None] = mapped_column(String(20), nullable=True)  # clock_in | clock_out
+    lokasi: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    shift_name: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    status: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    raw: Mapped[dict | None] = mapped_column(JsonType, nullable=True)
+
+    __table_args__ = (
+        Index("ix_raw_activity_emp_tgl", "employee_id", "tanggal"),
+    )
+
+
+class RawReport(Base):
+    """Satu baris Report Attendance (tanpa subtotal) per karyawan per tanggal."""
+
+    __tablename__ = "raw_report"
+    id: Mapped[int] = mapped_column(BigId, primary_key=True)
+    upload_id: Mapped[int] = mapped_column(ForeignKey("uploads.id", ondelete="CASCADE"), index=True)
+    employee_id: Mapped[str] = mapped_column(String(30))
+    nama: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    tanggal: Mapped[date] = mapped_column(Date)
+    shift_name: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    jadwal_masuk_menit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    jadwal_pulang_menit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    check_in_menit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    check_out_menit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    late_in_menit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    early_out_menit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    actual_hour: Mapped[float | None] = mapped_column(Float, nullable=True)
+    real_hour: Mapped[float | None] = mapped_column(Float, nullable=True)
+    kode_kehadiran: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    organisasi: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    cabang: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    raw: Mapped[dict | None] = mapped_column(JsonType, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("employee_id", "tanggal", name="uq_raw_report_emp_tgl"),
+    )
+
+
+class TimeOffRequest(Base):
+    """Pengajuan izin, cuti, sakit dari file Time Off."""
+
+    __tablename__ = "time_off_requests"
+    id: Mapped[int] = mapped_column(BigId, primary_key=True)
+    upload_id: Mapped[int] = mapped_column(ForeignKey("uploads.id", ondelete="CASCADE"), index=True)
+    employee_id: Mapped[str] = mapped_column(String(30))
+    request_id: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    tanggal_mulai: Mapped[date] = mapped_column(Date)
+    tanggal_selesai: Mapped[date | None] = mapped_column(Date, nullable=True)
+    policy_code: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    policy_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    tipe: Mapped[str | None] = mapped_column(String(30), nullable=True)  # Full Day / per jam
+    durasi: Mapped[float | None] = mapped_column(Float, nullable=True)
+    status: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    raw: Mapped[dict | None] = mapped_column(JsonType, nullable=True)
+
+    __table_args__ = (
+        Index("ix_time_off_emp_mulai", "employee_id", "tanggal_mulai"),
+    )
+
+
+class AttendanceCorrection(Base):
+    """Pengajuan koreksi absen dari file Approval, jam hasil urai dari Description."""
+
+    __tablename__ = "attendance_corrections"
+    id: Mapped[int] = mapped_column(BigId, primary_key=True)
+    upload_id: Mapped[int] = mapped_column(ForeignKey("uploads.id", ondelete="CASCADE"), index=True)
+    employee_id: Mapped[str] = mapped_column(String(30))
+    tanggal_efektif: Mapped[date] = mapped_column(Date)
+    jam_masuk_menit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    jam_keluar_menit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    alasan: Mapped[str | None] = mapped_column(Text, nullable=True)
+    alasan_kategori: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    status: Mapped[str | None] = mapped_column(String(30), nullable=True)  # Approved / Pending / Rejected
+    approver: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    diajukan_pada: Mapped[date | None] = mapped_column(Date, nullable=True)
+    raw: Mapped[dict | None] = mapped_column(JsonType, nullable=True)
+
+    __table_args__ = (
+        Index("ix_correction_emp_tgl", "employee_id", "tanggal_efektif"),
+    )
+
+
+class Employee(Base):
+    """Master karyawan, dibangun dari file upload (PRD F15)."""
+
+    __tablename__ = "employees"
+    employee_id: Mapped[str] = mapped_column(String(30), primary_key=True)
+    nama: Mapped[str] = mapped_column(String(150))
+    jabatan: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    organisasi: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    cabang: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    status_kerja: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    resign: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Period(Base):
+    """Status buka/tutup per bulan (PRD F13)."""
+
+    __tablename__ = "periods"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tahun: Mapped[int] = mapped_column(Integer)
+    bulan: Mapped[int] = mapped_column(Integer)
+    ditutup: Mapped[bool] = mapped_column(Boolean, default=False)
+    ditutup_oleh: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    ditutup_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    alasan: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("tahun", "bulan", name="uq_period_tahun_bulan"),
     )
 
 
@@ -222,4 +395,39 @@ class SalesAssessment(Base):
     __table_args__ = (
         UniqueConstraint("employee_id", "periode", name="uq_sales_assessment_emp_periode"),
         Index("ix_sales_assessment_status", "status"),
+    )
+
+
+# ========== Arsip file upload (PRD F22-F24) ==========
+
+class ArchivedFile(Base):
+    """Salinan file upload asli yang disimpan di penyimpanan terpisah, dengan checksum SHA-256.
+
+    Riwayat upload hanya menyimpan metadata paket; isi file ada di arsip ini. Penghapusan
+    memakai tahap tempat sampah (status "sampah") sebelum hapus permanen ("dihapus").
+    """
+
+    __tablename__ = "archived_files"
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True)
+    upload_id: Mapped[int | None] = mapped_column(ForeignKey("uploads.id", ondelete="SET NULL"), nullable=True, index=True)
+    jenis_sumber: Mapped[str] = mapped_column(String(30))  # "presensi" | "penjualan"
+    nama_asli: Mapped[str] = mapped_column(String(255))
+    path_arsip: Mapped[str] = mapped_column(Text)
+    ukuran: Mapped[int] = mapped_column(BigInteger().with_variant(Integer(), "sqlite"))
+    checksum: Mapped[str] = mapped_column(String(64))  # SHA-256 hex
+    pengunggah_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    periode_awal: Mapped[date | None] = mapped_column(Date, nullable=True)  # rentang tanggal data bila diketahui
+    periode_akhir: Mapped[date | None] = mapped_column(Date, nullable=True)
+    status: Mapped[ArchiveStatus] = mapped_column(
+        Enum(ArchiveStatus, native_enum=False, length=20), default=ArchiveStatus.aktif, index=True
+    )
+    dihapus_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    dihapus_oleh: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    alasan_hapus: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_archived_files_checksum", "checksum"),
+        Index("ix_archived_files_periode", "periode_awal", "periode_akhir"),
+        Index("ix_archived_files_created", "created_at"),
     )

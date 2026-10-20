@@ -4,7 +4,9 @@ Upload file Excel 2 sheet (Penjualan + Target) oleh Sales/Marketing.
 Dashboard untuk HR, Audit, Sales/Marketing.
 Persetujuan Penilaian oleh akun Sales/Marketing yang ditandai penyetuju.
 """
+import calendar
 import uuid
+from datetime import date
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
@@ -24,6 +26,7 @@ from app.schemas import (
 )
 from app.services import audit
 from app.services.aggregator import _counters
+from app.services.archive import archive_upload
 from app.services.sales_parser import read_sales_file
 from app.services.sales_template import create_sales_template
 
@@ -187,6 +190,14 @@ def confirm_sales_upload(
         audit_detail = stats.pop("audit")
         up.status = UploadStatus.saved
         up.row_count = stats["inserted_performance"] + stats["inserted_targets"]
+        # Arsipkan file asli penjualan (PRD F22). Rentang tanggal data = awal dan akhir bulan periode.
+        periods = sorted(set(result.clean_penjualan["periode"].unique().to_list()))
+        awal = akhir = None
+        if periods:
+            y0, m0 = map(int, periods[0].split("-"))
+            y1, m1 = map(int, periods[-1].split("-"))
+            awal, akhir = date(y0, m0, 1), date(y1, m1, calendar.monthrange(y1, m1)[1])
+        archive_upload(db, up, "penjualan", periode_awal=awal, periode_akhir=akhir)
 
         audit.log(db, user.id, "sales_confirm", {
             "upload_id": up.id,

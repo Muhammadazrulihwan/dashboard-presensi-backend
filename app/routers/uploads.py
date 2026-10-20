@@ -1,6 +1,6 @@
 import io
 import uuid
-from datetime import timezone
+from datetime import date, timezone
 from pathlib import Path
 
 import xlsxwriter
@@ -11,18 +11,27 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db import get_db
 from app.deps import HR_ONLY, get_current_user
-from app.models import Attendance, Upload, UploadStatus, User
-from app.schemas import ConfirmRequest, ConfirmResponse, PreviewResponse, UploadOut
+from app.models import Attendance, Upload, UploadFile as UploadFileRow, UploadStatus, User
+from app.schemas import (
+    ConfirmRequest, ConfirmResponse, PackageConfirmRequest, PackageConfirmResponse, PackagePreviewResponse,
+    PreviewResponse, SourceFileInfo, UploadOut,
+)
 from app.services import audit
+from app.services.archive import archive_upload
 from app.services.calculator import compute
 from app.services.cleanup import discard_file
 from app.services.file_reader import read_table
-from app.services.importer import find_conflicts, import_rows
+from app.services.importer import (
+    clear_sources, find_conflicts, import_rows, save_rekap, save_sources, upsert_employees,
+)
+from app.services.merge import build_employee_master, merge
 from app.services.rules import holidays_list, rules_frame, rules_map
+from app.services.sources import SourceError, parse_source
 from app.services.validator import validate
 
 router = APIRouter(prefix="/uploads", tags=["uploads"], dependencies=[HR_ONLY])
 ALLOWED = {".csv", ".xlsx"}
+SOURCE_KINDS = ("activity", "report", "timeoff", "approval")
 
 
 @router.get("/template")
@@ -177,6 +186,9 @@ def confirm(
     try:
         stats = import_rows(db, up.id, computed, mode, conflicts)
         up.status, up.row_count = UploadStatus.saved, stats["inserted"]
+        # Arsipkan file asli (PRD F22): disalin ke penyimpanan terpisah dengan checksum SHA-256.
+        archive_upload(db, up, "presensi",
+                       periode_awal=computed["tanggal"].min(), periode_akhir=computed["tanggal"].max())
         audit.log(db, user.id, "upload_confirm", {"upload_id": up.id, "mode": mode, **stats}, _ip(request))
         db.commit()
     except Exception:
@@ -222,3 +234,177 @@ def delete_upload(upload_id: int, request: Request, db: Session = Depends(get_db
     db.commit()
     uploader = db.get(User, up.uploaded_by)
     return _out(up, uploader.full_name if uploader else "-")
+
+
+# ---------- Paket empat sumber (PRD F4-F9, Rilis B) ----------
+
+def _save_upload_file(file: UploadFile, jenis: str) -> tuple[Path, str]:
+    original = Path(file.filename or "upload").name
+    ext = Path(original).suffix.lower()
+    if ext not in ALLOWED:
+        raise HTTPException(400, f"File {jenis}: format harus .csv atau .xlsx")
+    settings.storage_dir.mkdir(parents=True, exist_ok=True)
+    dest = settings.storage_dir / f"{uuid.uuid4().hex}{ext}"
+    _save_stream(file, dest)
+    return dest, original
+
+
+def _parse_package(files: dict[str, tuple[Path, str]]) -> tuple[dict, list[str]]:
+    """Parse semua file paket. Kembalikan (parsed, errors)."""
+    parsed: dict = {}
+    errors: list[str] = []
+    for kind, (path, _name) in files.items():
+        try:
+            parsed[kind] = parse_source(kind, path)
+        except SourceError as e:
+            errors.append(f"{kind}: {e}")
+    return parsed, errors
+
+
+def _merge_from_parsed(db: Session, parsed: dict) -> tuple[list[dict], date, date]:
+    """Gabungkan sumber menjadi Rekap Absensi. Rentang diambil dari tanggal data terkumpul."""
+    acts = parsed["activity"].rows if "activity" in parsed else []
+    reps = parsed["report"].rows if "report" in parsed else []
+    tios = parsed["timeoff"].rows if "timeoff" in parsed else []
+    apps = parsed["approval"].rows if "approval" in parsed else []
+    dates = [r["tanggal"] for r in acts] + [r["tanggal"] for r in reps] + [r["tanggal_efektif"] for r in apps]
+    for t in tios:
+        dates.append(t["tanggal_mulai"])
+        if t.get("tanggal_selesai"):
+            dates.append(t["tanggal_selesai"])
+    if not dates:
+        raise HTTPException(422, "Tidak ada tanggal data pada file yang diunggah")
+    d1, d2 = min(dates), max(dates)
+    rows = merge(
+        activity=acts, report=reps, timeoff=tios, approval=apps,
+        rules=rules_map(db), holidays=set(holidays_list(db)), tanggal_awal=d1, tanggal_akhir=d2,
+    )
+    return rows, d1, d2
+
+
+@router.post("/package/preview", response_model=PackagePreviewResponse)
+async def package_preview(
+    request: Request,
+    activity: UploadFile | None = File(None),
+    report: UploadFile | None = File(None),
+    timeoff: UploadFile | None = File(None),
+    approval: UploadFile | None = File(None),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Pratinjau paket empat sumber. Minimal satu file; yang belum ada boleh diunggah belakangan."""
+    incoming = {"activity": activity, "report": report, "timeoff": timeoff, "approval": approval}
+    files: dict[str, tuple[Path, str]] = {}
+    for kind, f in incoming.items():
+        if f is not None:
+            files[kind] = _save_upload_file(f, kind)
+    if not files:
+        raise HTTPException(422, "Unggah minimal satu file sumber")
+
+    # Satu paket Upload menampung semua file; stored_path diisi file pertama sebagai ringkasan.
+    first_path, first_name = next(iter(files.values()))
+    up = Upload(filename=first_name, stored_path=str(first_path), uploaded_by=user.id, status=UploadStatus.pending)
+    db.add(up)
+    db.commit()
+    for kind, (path, name) in files.items():
+        db.add(UploadFileRow(upload_id=up.id, jenis_sumber=kind, nama_file=name, stored_path=str(path)))
+    db.commit()
+
+    parsed, errors = _parse_package(files)
+    infos = [
+        SourceFileInfo(
+            jenis_sumber=kind, nama_file=files[kind][1], row_count=p.row_count,
+            warnings=p.warnings, mapped_columns=p.mapped_columns, date_from=p.date_from, date_to=p.date_to,
+        )
+        for kind, p in parsed.items()
+    ]
+
+    can_save = not errors
+    d1 = d2 = None
+    employee_count = rekap_rows = conflict_count = 0
+    status_counts: dict[str, int] = {}
+    if can_save:
+        try:
+            rows, d1, d2 = _merge_from_parsed(db, parsed)
+            rekap_rows = len(rows)
+            employee_count = len({r["nik"] for r in rows})
+            for r in rows:
+                status_counts[r["status"]] = status_counts.get(r["status"], 0) + 1
+            import polars as pl
+
+            df = pl.DataFrame({"nik": [r["nik"] for r in rows], "tanggal": [r["tanggal"] for r in rows]},
+                              schema={"nik": pl.Utf8, "tanggal": pl.Date})
+            conflict_count = find_conflicts(db, df).height if rows else 0
+        except HTTPException as e:
+            errors.append(str(e.detail))
+            can_save = False
+
+    up.status = UploadStatus.validated if can_save else UploadStatus.failed
+    up.row_count = rekap_rows
+    db.commit()
+    audit.log(db, user.id, "package_preview", {
+        "upload_id": up.id, "sumber": list(files), "rekap_rows": rekap_rows, "errors": len(errors),
+    }, _ip(request))
+    db.commit()
+
+    return PackagePreviewResponse(
+        upload_id=up.id, files=infos, errors=errors, can_save=can_save,
+        date_from=d1, date_to=d2, employee_count=employee_count, rekap_rows=rekap_rows,
+        status_counts=status_counts, conflict_count=conflict_count,
+    )
+
+
+@router.post("/package/{upload_id}/confirm", response_model=PackageConfirmResponse)
+def package_confirm(
+    upload_id: int,
+    request: Request,
+    body: PackageConfirmRequest | None = Body(None),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Simpan paket empat sumber: data mentah + Rekap Absensi terpadu + master karyawan."""
+    up = db.get(Upload, upload_id)
+    if up is None:
+        raise HTTPException(404, "Upload tidak ditemukan")
+    if up.status != UploadStatus.validated:
+        raise HTTPException(409, "Paket ini sudah disimpan atau tidak lolos validasi")
+
+    rows_files = db.scalars(select(UploadFileRow).where(UploadFileRow.upload_id == up.id)).all()
+    if not rows_files:
+        raise HTTPException(409, "File paket tidak ditemukan")
+    files = {r.jenis_sumber: (Path(r.stored_path), r.nama_file) for r in rows_files}
+
+    parsed, errors = _parse_package(files)
+    if errors:
+        raise HTTPException(409, "File tidak lolos validasi: " + "; ".join(errors))
+
+    try:
+        rows, d1, d2 = _merge_from_parsed(db, parsed)
+        # Data mentah diganti untuk rentang tanggal yang sama, lalu rekap disimpan.
+        clear_sources(db, d1, d2)
+        sumber = save_sources(db, up.id, parsed)
+        employees = upsert_employees(db, build_employee_master(
+            parsed["report"].rows if "report" in parsed else [],
+            parsed["activity"].rows if "activity" in parsed else [],
+        ))
+        mode = body.mode if body else None
+        stats = save_rekap(db, up.id, rows, mode)
+        up.status, up.row_count = UploadStatus.saved, stats["inserted"]
+        archive_upload(db, up, "presensi", periode_awal=d1, periode_akhir=d2)
+        audit.log(db, user.id, "package_confirm", {
+            "upload_id": up.id, "mode": mode, "sumber": sumber, "employees": employees, **stats,
+        }, _ip(request))
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        up.status = UploadStatus.failed
+        db.commit()
+        raise HTTPException(500, "Gagal menyimpan paket. Coba ulangi upload")
+
+    return PackageConfirmResponse(
+        upload=_out(up, user.full_name), inserted=stats["inserted"], overwritten=stats["overwritten"],
+        skipped=stats["skipped"], sumber=sumber, employees=employees,
+    )

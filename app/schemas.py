@@ -143,6 +143,65 @@ class EmployeeDetail(BaseModel):
     trend: list[EmployeeTrendPoint]
 
 
+# ========== Kelengkapan Data (PRD F12) ==========
+
+class CompletenessPeriode(BaseModel):
+    from_: date | None = Field(None, alias="from")
+    to: date | None = None
+    model_config = {"populate_by_name": True}
+
+
+class CompletenessRingkasan(BaseModel):
+    karyawan: int
+    karyawan_lengkap: int
+    karyawan_tanpa_data: int
+    hari_tanpa_data: int
+    baris_clock_out_hilang: int
+    baris_clock_in_hilang: int
+
+
+class CompletenessTanpaData(BaseModel):
+    nik: str
+    nama: str
+    departemen: str
+    hari_kerja_tercatat: int
+    hari_tanpa_data: int
+
+
+class CompletenessKetukan(BaseModel):
+    nik: str
+    nama: str
+    departemen: str
+    tanggal: date
+    jam_masuk: str | None
+    jam_keluar: str | None
+
+
+class CompletenessCakupan(BaseModel):
+    periode: str
+    karyawan: int
+    baris: int
+    hari_kerja: int
+
+
+class CompletenessSumber(BaseModel):
+    kode: str
+    nama: str
+    status: str  # "tersedia" | "belum"
+    catatan: str
+
+
+class CompletenessResponse(BaseModel):
+    periode: CompletenessPeriode
+    hari_kerja_kalender: int
+    ringkasan: CompletenessRingkasan
+    karyawan_tanpa_data: list[CompletenessTanpaData]
+    clock_out_hilang: list[CompletenessKetukan]
+    clock_in_hilang: list[CompletenessKetukan]
+    cakupan_bulan: list[CompletenessCakupan]
+    sumber: list[CompletenessSumber]
+
+
 class ShiftIn(BaseModel):
     jam_masuk: str = Field(pattern=r"^\d{2}:\d{2}$")
     jam_pulang: str = Field(pattern=r"^\d{2}:\d{2}$")
@@ -306,3 +365,72 @@ class PerusahaanPerformance(BaseModel):
 class AssessmentUpdate(BaseModel):
     status: str = Field(pattern="^(Draf|Disetujui|Ditolak)$")
     notes: str | None = Field(None, max_length=500)
+
+
+# ========== Arsip file upload (PRD F22-F24) ==========
+
+class ArchivedFileOut(BaseModel):
+    id: int
+    upload_id: int | None
+    jenis_sumber: str
+    nama_asli: str
+    ukuran: int
+    checksum: str
+    checksum_terverifikasi: bool
+    pengunggah: str | None
+    periode_awal: date | None
+    periode_akhir: date | None
+    status: str  # aktif | sampah | dihapus
+    created_at: datetime
+    dihapus_at: datetime | None
+    alasan_hapus: str | None
+    bisa_dihapus_permanen: bool
+
+
+class ArchivedFilePage(BaseModel):
+    items: list[ArchivedFileOut]
+    total: int
+    page: int
+    page_size: int
+
+
+class TrashRequest(BaseModel):
+    alasan: str = Field(min_length=1, max_length=500)
+
+
+# ========== Paket empat sumber (Rilis B) ==========
+
+class SourceFileInfo(BaseModel):
+    jenis_sumber: str  # activity | report | timeoff | approval
+    nama_file: str
+    row_count: int
+    warnings: list[str] = []
+    mapped_columns: list[str] = []
+    date_from: date | None = None
+    date_to: date | None = None
+
+
+class PackagePreviewResponse(BaseModel):
+    upload_id: int
+    files: list[SourceFileInfo]
+    errors: list[str] = []
+    can_save: bool
+    date_from: date | None = None
+    date_to: date | None = None
+    employee_count: int = 0
+    rekap_rows: int = 0
+    status_counts: dict[str, int] = {}
+    conflict_count: int = 0
+
+
+class PackageConfirmRequest(BaseModel):
+    mode: Literal["overwrite", "skip"] | None = None
+
+
+class PackageConfirmResponse(BaseModel):
+    upload: UploadOut
+    inserted: int
+    overwritten: int
+    skipped: int
+    sumber: dict[str, int] = {}
+    employees: int = 0

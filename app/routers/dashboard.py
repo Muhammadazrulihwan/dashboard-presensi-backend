@@ -4,10 +4,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.deps import DASHBOARD, PERFORMANCE, data_scope, get_current_user, scoped_filters
+from app.deps import DASHBOARD, HR_ONLY, PERFORMANCE, data_scope, get_current_user, scoped_filters
 from app.models import Department, User
-from app.schemas import DeptRow, EmployeeDetail, MetaOut, RecordsPage, StatusCount, SummaryResponse, TopEmployee, TrendPoint
+from app.schemas import (
+    CompletenessResponse, DeptRow, EmployeeDetail, MetaOut, RecordsPage, StatusCount, SummaryResponse, TopEmployee, TrendPoint,
+)
 from app.services import aggregator as agg
+from app.services import completeness as comp
 from app.services.rules import min_to_hhmm
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -83,3 +86,13 @@ def get_employee_detail(nik: str, f: agg.Filters = Depends(scoped_filters), db: 
     if detail is None:
         raise HTTPException(404, "Karyawan tidak ditemukan pada rentang filter ini")
     return detail
+
+
+@router.get("/completeness", response_model=CompletenessResponse, dependencies=[HR_ONLY])
+def get_completeness(f: agg.Filters = Depends(scoped_filters), db: Session = Depends(get_db)):
+    """Kelengkapan Data (PRD F12): hari tanpa data, clock out/in hilang, cakupan bulan, status sumber.
+
+    Hanya HR. Indikator selisih Report Attendance dan koreksi setelah tutup bulan menyusul di Rilis B
+    karena membutuhkan parser empat sumber.
+    """
+    return comp.completeness(db, f)

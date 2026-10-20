@@ -19,7 +19,10 @@ from sqlalchemy import delete, select  # noqa: E402
 from app.db import SessionLocal  # noqa: E402
 from app.deps import get_current_user  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import Attendance, Holiday, ShiftRule, Upload, User  # noqa: E402
+from app.models import (
+    Attendance, AttendanceCorrection, Employee, Holiday, Period, RawActivity, RawReport, ShiftRule,
+    TimeOffRequest, Upload, UploadFile, User,
+)
 
 
 def _run_migrations() -> None:
@@ -46,7 +49,14 @@ def client():
 def clean_db(client, request):
     with SessionLocal() as db:
         db.execute(delete(Attendance))
+        db.execute(delete(UploadFile))
         db.execute(delete(Upload))
+        db.execute(delete(RawActivity))
+        db.execute(delete(RawReport))
+        db.execute(delete(TimeOffRequest))
+        db.execute(delete(AttendanceCorrection))
+        db.execute(delete(Employee))
+        db.execute(delete(Period))
         db.execute(delete(Holiday))
         db.execute(delete(ShiftRule).where(ShiftRule.kode != "REGULER"))
         reg = db.get(ShiftRule, "REGULER")

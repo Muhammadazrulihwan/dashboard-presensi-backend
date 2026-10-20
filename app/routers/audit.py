@@ -31,29 +31,48 @@ class AuditLogResponse(BaseModel):
     page_size: int
 
 
+class AuditLogUser(BaseModel):
+    id: int
+    full_name: str
+    email: str
+
+
+# Label harus memakai action yang benar-benar ditulis lewat audit.log().
+# Bila menambah audit.log baru di router, tambahkan labelnya di sini juga.
 ACTION_LABELS = {
+    # Autentikasi
     "login": "Login",
     "login_failed": "Login Gagal",
     "login_blocked": "Login Diblokir",
-    "logout": "Logout",
-    "upload": "Upload File",
-    "upload_confirmed": "Upload Dikonfirmasi",
-    "upload_deleted": "Upload Dihapus",
-    "export_excel": "Export Excel",
-    "export_pdf": "Export PDF",
-    "export_employee_pdf": "Export PDF Karyawan",
-    "export_employee_excel": "Export Excel Karyawan",
-    "export_payroll": "Export Payroll",
-    "user_created": "Buat User",
-    "user_updated": "Update User",
+    # Upload presensi (HR)
+    "upload_preview": "Periksa File Presensi",
+    "upload_confirm": "Simpan File Presensi",
+    "upload_delete": "Hapus Upload Presensi",
+    "package_preview": "Periksa Paket Empat Sumber",
+    "package_confirm": "Simpan Paket Empat Sumber",
+    # Kinerja penjualan (Sales/Marketing)
+    "sales_preview": "Periksa File Penjualan",
+    "sales_confirm": "Simpan File Penjualan",
+    "sales_assessment_update": "Persetujuan Penilaian",
+    # Export
+    "export_excel": "Export Excel Rekap",
+    "export_pdf": "Export PDF Rekap",
+    "export_employee_pdf": "Export PDF Individual",
+    "export_employee_excel": "Export Excel Individual",
+    "export_payroll": "Export Rekap Payroll",
+    # Kelola user (IT)
+    "user_create": "Buat User",
+    "user_update": "Ubah User",
     "user_password_reset": "Reset Password",
-    "user_deactivated": "Nonaktifkan User",
-    "shift_created": "Buat Shift",
-    "shift_updated": "Update Shift",
-    "shift_deleted": "Hapus Shift",
-    "holiday_created": "Tambah Libur",
-    "holiday_deleted": "Hapus Libur",
-    "recalculate": "Hitung Ulang",
+    "user_deactivate": "Nonaktifkan User",
+    # Pengaturan (HR)
+    "shift_upsert": "Simpan Shift",
+    "recalculate": "Hitung Ulang Presensi",
+    # Arsip file (HR dan Audit)
+    "archive_download": "Unduh Arsip",
+    "archive_trash": "Pindah Arsip ke Tempat Sampah",
+    "archive_restore": "Pulihkan Arsip",
+    "archive_purge": "Hapus Arsip Permanen",
 }
 
 
@@ -107,6 +126,21 @@ def get_audit_logs(
     ]
 
     return AuditLogResponse(items=items, total=total, page=page, page_size=page_size)
+
+
+@router.get("/users", response_model=list[AuditLogUser])
+def get_audit_users(db: Session = Depends(get_db)):
+    """Daftar pengguna yang muncul di audit log, untuk pilihan filter.
+
+    Dipisah dari /admin/users (khusus IT) agar HR dan Audit juga bisa memakai halaman ini.
+    """
+    rows = db.execute(
+        select(User.id, User.full_name, User.email)
+        .join(AuditLog, AuditLog.user_id == User.id)
+        .distinct()
+        .order_by(User.full_name)
+    ).all()
+    return [AuditLogUser(id=r.id, full_name=r.full_name, email=r.email) for r in rows]
 
 
 @router.get("/actions")
