@@ -8,6 +8,7 @@ from app.db import SessionLocal
 from app.routers import admin, archive, auth, dashboard, exports, periods, sales, settings as settings_router, uploads
 from app.routers.audit import router as audit_router
 from app.services.bootstrap import check_production_settings, ensure_admin, ensure_departments
+from app.services.app_settings import ensure_defaults as ensure_app_settings
 from app.services.cleanup import purge_stale_uploads
 from app.services.rules import ensure_default_shift
 
@@ -22,6 +23,7 @@ async def lifespan(_: FastAPI):
         ensure_departments(db)
         ensure_admin(db)
         ensure_default_shift(db)
+        ensure_app_settings(db)
         purge_stale_uploads(db)
     yield
 

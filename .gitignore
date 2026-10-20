@@ -24,3 +24,6 @@ storage/
 .idea/
 .DS_Store
 Thumbs.db
+
+# File sampel lokal, tidak untuk di-push
+samples/

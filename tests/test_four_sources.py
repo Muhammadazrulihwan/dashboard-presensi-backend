@@ -51,7 +51,7 @@ def report_xlsx() -> bytes:
                    "Check In", "Check Out", "Late In", "Early Out", "Actual Working Hour", "Real Working Hour",
                    "Attendance Code", "Organization", "Branch"])
         ws.append(["LS019", "Kamaludin", "2026-09-01", "LSP-1", "08:30", "16:30", "08:20", "17:05",
-                   "", "", "7:00", "8:45", "H", "IT", "PT Lenko - Pusat"])
+                   "15", "", "7:00", "8:45", "H", "IT", "PT Lenko - Pusat"])
         ws.append(["LS021", "Wita Aeni", "2026-09-02", "LSP-2", "08:30", "13:30", "08:30", "",
                    "", "", "5:00", "5:00", "H", "IT", "PT Lenko - Pusat"])
         ws.append(["LS417", "Berry Alpian Hidayat", "2026-09-03", "LSP-1", "08:30", "16:30", "08:35", "16:40",
@@ -211,3 +211,37 @@ def test_package_rejects_bad_columns(client):
     r = client.post("/uploads/package/preview", files={"activity": ("a.xlsx", data)})
     body = r.json()
     assert body["can_save"] is False and any("activity" in e for e in body["errors"])
+
+
+# ---------- Data Rilis B tersambung ke dashboard & kelengkapan (F11/F12/F17/F18) ----------
+
+def test_summary_and_completeness_use_four_source_fields(client):
+    body = upload_package(client, {
+        "activity": activity_xlsx(), "report": report_xlsx(),
+        "timeoff": timeoff_xlsx(), "approval": approval_xlsx(),
+    })
+    confirm_package(client, body["upload_id"])
+
+    # Summary memuat koreksi & jam kerja nyata.
+    s = client.get("/dashboard/summary", params={"from": "2026-09-01", "to": "2026-09-05"}).json()["current"]
+    assert s["dikoreksi"] >= 1                     # LS417 09-05 dikoreksi
+    assert s["jam_kerja_nyata"] is not None and s["jam_kerja_nyata"] > 0
+
+    # Kelengkapan memuat baris selisih Report: LS019 09-01 report late 15 mnt vs sistem 0 -> ditandai.
+    c = client.get("/dashboard/completeness", params={"from": "2026-09-01", "to": "2026-09-05"}).json()
+    assert c["ringkasan"]["baris_selisih_report"] >= 1
+    assert any(x["nik"] == "LS019" for x in c["selisih_report"])
+
+
+def test_employee_detail_exposes_correction_and_real_hours(client):
+    body = upload_package(client, {"activity": activity_xlsx(), "report": report_xlsx(), "approval": approval_xlsx()})
+    confirm_package(client, body["upload_id"])
+    d = client.get("/dashboard/employee/LS019", params={"from": "2026-09-01", "to": "2026-09-05"}).json()
+    row = next(r for r in d["range"] if r["tanggal"] == "2026-09-01")
+    # LS019 punya clock in & out dari Activity -> jam kerja nyata terisi.
+    assert row["jam_kerja_nyata"] is not None and row["jam_kerja_nyata"] > 0
+    # LS417 09-05 dikoreksi lewat Approval (hanya jam keluar).
+    d2 = client.get("/dashboard/employee/LS417", params={"from": "2026-09-01", "to": "2026-09-05"}).json()
+    cor = next(r for r in d2["range"] if r["tanggal"] == "2026-09-05")
+    assert cor["dikoreksi"] is True and cor["koreksi_approver"] == "LS007 Hikmat"
+

@@ -99,6 +99,11 @@ def _counters() -> dict:
         "cuti": _cnt(and_(hk, A.status == "Cuti")),
         "alpa": _cnt(and_(hk, A.status == "Alpa")),
         "dinas_luar": _cnt(and_(hk, A.status == "Dinas Luar")),
+        # Rekap Absensi terpadu (Rilis B): koreksi dan pembanding Report Attendance.
+        "dikoreksi": _cnt(and_(hk, A.dikoreksi.is_(True))),
+        "selisih_report": _cnt(and_(hk, A.selisih_report.is_not(None))),
+        "clock_out_hilang": _cnt(and_(hk, A.clock_out_hilang.is_(True))),
+        "koreksi_setelah_tutup": _cnt(A.koreksi_setelah_tutup.is_(True)),
     }
 
 
@@ -113,10 +118,12 @@ def _extra_counters() -> dict:
         "jam_kerja_libur": func.coalesce(func.sum(case((off, A.durasi_kerja), else_=0)), 0),
         "menit_lembur": func.coalesce(func.sum(A.menit_lembur), 0),  # semua hari, termasuk hari libur
         "menit_lembur_libur": func.coalesce(func.sum(case((off, A.menit_lembur), else_=0)), 0),
+        # Jam kerja nyata (Real Working Hour) dari parser empat sumber; kosong pada data template lama.
+        "jam_kerja_nyata": func.coalesce(func.sum(A.jam_kerja_nyata), 0),
     }
 
 
-_FLOATS = {"jam_kerja", "jam_kerja_libur"}
+_FLOATS = {"jam_kerja", "jam_kerja_libur", "jam_kerja_nyata"}
 
 
 def _finish(row: dict) -> dict:
@@ -134,7 +141,8 @@ def summary(db: Session, f: Filters) -> dict:
     # Berbeda dengan rata-rata jam, angka ini tetap bermakna bila ada lebih dari satu shift.
     diff = ((A.jam_masuk_menit - ShiftRule.jam_masuk_menit + 720) % 1440 + 1440) % 1440 - 720
     avg_diff = func.avg(case((and_(hadir_masuk, ShiftRule.jam_masuk_menit.is_not(None)), diff)))
-    cols = {**_counters(), "karyawan": func.count(func.distinct(A.nik)), "records": func.count(A.id)}
+    cols = {**_counters(), "karyawan": func.count(func.distinct(A.nik)), "records": func.count(A.id),
+            "jam_kerja_nyata": func.coalesce(func.sum(A.jam_kerja_nyata), 0)}
     stmt = (
         select(*[v.label(k) for k, v in cols.items()], avg_masuk.label("avg_masuk"), avg_diff.label("avg_selisih"))
         .select_from(A)
@@ -249,6 +257,13 @@ def employee_detail(db: Session, f: Filters, nik: str) -> dict | None:
             "id": r.id, "tanggal": r.tanggal, "nik": r.nik, "nama": r.nama, "departemen": r.departemen,
             "jam_masuk": min_to_hhmm(r.jam_masuk_menit), "jam_keluar": min_to_hhmm(r.jam_keluar_menit),
             "menit_terlambat": r.menit_terlambat, "durasi_kerja": r.durasi_kerja, "status": r.status, "keterangan": r.keterangan,
+            # Rekap terpadu (Rilis B): jejak koreksi dan pembanding Report Attendance.
+            "jam_kerja_nyata": r.jam_kerja_nyata,
+            "dikoreksi": bool(r.dikoreksi),
+            "koreksi_alasan": r.koreksi_alasan,
+            "koreksi_approver": r.koreksi_approver,
+            "clock_out_hilang": bool(r.clock_out_hilang),
+            "selisih_report": r.selisih_report,
         }
         for r in rows
     ]
@@ -278,13 +293,23 @@ def payroll_rows(db: Session, f: Filters) -> list[dict]:
 
     hari_kerja_periode = hari kerja menurut kalender, hari_kerja_tercatat = hari kerja yang punya baris data,
     hari_tanpa_data = selisihnya (indikator kelengkapan data).
+
+    Pembagi hari kerja (PRD F29) diatur HR (default 25). gaji_prorata_persen = hari_hadir_dibayar / pembagi * 100,
+    dipakai sebagai masukan kolom "Gaji sesuai Hari Kerja" di rekap gaji (sistem tidak menghitung nominal).
     """
+    from app.services.app_settings import payroll_workdays
+
     assert f.date_from and f.date_to
     expected = workdays_between(db, f.date_from, f.date_to)
+    pembagi = payroll_workdays(db)
     out = []
     for r in recap(db, replace(f, status=None), "karyawan"):
         r["hari_hadir"] = r["hadir"] - r["dinas_luar"]  # hanya status Hadir, Dinas Luar dipisah
         r["hari_kerja_periode"] = expected
         r["hari_tanpa_data"] = max(0, expected - r["hari_kerja"])
+        # Hari yang dibayar penuh: hadir + dinas luar + izin/sakit/cuti (kebijakan PRD: berizin tidak memotong).
+        r["hari_dibayar"] = r["hari_hadir"] + r["dinas_luar"] + r["izin"] + r["sakit"] + r["cuti"]
+        r["pembagi_hari_kerja"] = pembagi
+        r["gaji_prorata_persen"] = round(r["hari_dibayar"] * 100 / pembagi, 2) if pembagi else None
         out.append(r)
     return out

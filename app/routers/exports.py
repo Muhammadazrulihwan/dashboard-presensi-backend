@@ -464,6 +464,11 @@ def export_employee_excel(
         ("Jam kerja pada hari libur", r["jam_kerja_libur"], dec2),
         ("Total menit lembur", r["menit_lembur"], int0),
         ("Menit lembur pada hari libur", r["menit_lembur_libur"], int0),
+        ("Total jam kerja nyata", r.get("jam_kerja_nyata", 0), dec2),
+        ("Hari dikoreksi", r.get("dikoreksi", 0), int0),
+        ("Hari selisih terhadap Report", r.get("selisih_report", 0), int0),
+        ("Hari clock out hilang", r.get("clock_out_hilang", 0), int0),
+        ("Koreksi setelah tutup bulan", r.get("koreksi_setelah_tutup", 0), int0),
         ("Rata-rata kedatangan terhadap jadwal", _arrival_text(detail["rekap"]["avg_selisih_masuk_menit"]), None),
     ]
     for i, (k, v, fmt) in enumerate(items, start=8):
@@ -474,12 +479,12 @@ def export_employee_excel(
             ws.write_string(i, 1, v)
         else:
             ws.write_number(i, 1, v, fmt)
-    ws.write(len(items) + 9, 0, "Catatan: koreksi disetujui dan jam kerja nyata belum tersedia sampai parser empat sumber (Rilis B).", note)
+    ws.write(len(items) + 9, 0, "Jam kerja nyata dan jejak koreksi berasal dari parser empat sumber; kosong bila data hanya dari file template lama.", note)
     ws.set_column(0, 0, 40)
     ws.set_column(1, 1, 34)
 
     wd = wb.add_worksheet("Data Harian")
-    cols = ["Tanggal", "Jam masuk", "Jam keluar", "Menit terlambat", "Durasi kerja (jam)", "Status", "Keterangan"]
+    cols = ["Tanggal", "Jam masuk", "Jam keluar", "Menit terlambat", "Durasi kerja (jam)", "Jam kerja nyata", "Status", "Dikoreksi", "Koreksi oleh", "Alasan koreksi", "Selisih Report", "Keterangan"]
     for c, name in enumerate(cols):
         wd.write(0, c, name, head)
     for i, x in enumerate(detail["range"], start=1):
@@ -487,15 +492,20 @@ def export_employee_excel(
         wd.write_string(i, 1, x["jam_masuk"] or "", text)
         wd.write_string(i, 2, x["jam_keluar"] or "", text)
         wd.write_number(i, 3, x["menit_terlambat"], int0)
-        if x["durasi_kerja"] is None:
-            wd.write_blank(i, 4, None)
-        else:
-            wd.write_number(i, 4, x["durasi_kerja"], dec2)
-        wd.write_string(i, 5, x["status"])
-        wd.write_string(i, 6, x["keterangan"] or "")
+        wd.write_blank(i, 4, None) if x["durasi_kerja"] is None else wd.write_number(i, 4, x["durasi_kerja"], dec2)
+        wd.write_blank(i, 5, None) if x.get("jam_kerja_nyata") is None else wd.write_number(i, 5, x["jam_kerja_nyata"], dec2)
+        wd.write_string(i, 6, x["status"])
+        wd.write_string(i, 7, "Ya" if x.get("dikoreksi") else "Tidak")
+        wd.write_string(i, 8, x.get("koreksi_approver") or "")
+        wd.write_string(i, 9, x.get("koreksi_alasan") or "")
+        wd.write_string(i, 10, x.get("selisih_report") or "")
+        wd.write_string(i, 11, x["keterangan"] or "")
     wd.set_column(0, 0, 13)
-    wd.set_column(1, 5, 16)
-    wd.set_column(6, 6, 40)
+    wd.set_column(1, 6, 16)
+    wd.set_column(7, 8, 14)
+    wd.set_column(9, 9, 30)
+    wd.set_column(10, 10, 36)
+    wd.set_column(11, 11, 40)
     wd.freeze_panes(1, 0)
     wd.autofilter(0, 0, max(len(detail["range"]), 1), len(cols) - 1)
     wb.close()
@@ -529,6 +539,9 @@ PAYROLL_COLUMNS = [
     ("total_menit_lembur", "Menit kerja setelah jam selesai shift, semua hari. Kerja di hari libur hanya terhitung lembur untuk menit setelah jam selesai shift"),
     ("menit_lembur_hari_libur", "Bagian dari total_menit_lembur yang terjadi pada hari Minggu atau hari libur"),
     ("tingkat_kehadiran_persen", "(hari_hadir ditambah hari_dinas_luar) dibagi hari_kerja_tercatat, dikali 100"),
+    ("pembagi_hari_kerja", "Pembagi hari kerja yang diatur HR di menu Pengaturan (default 25). Dipakai untuk kolom gaji_prorata_persen"),
+    ("hari_dibayar", "Hari yang dianggap dibayar penuh: hari_hadir + hari_dinas_luar + hari_izin + hari_sakit + hari_cuti"),
+    ("gaji_prorata_persen", "hari_dibayar dibagi pembagi_hari_kerja, dikali 100. Masukan untuk kolom Gaji sesuai Hari Kerja di rekap gaji (sistem tidak menghitung nominal)"),
     ("status_periode", "DITUTUP bila seluruh bulan dalam rentang sudah ditutup di menu Tutup Periode; selain itu DRAFT"),
 ]
 
@@ -573,7 +586,8 @@ def export_payroll(
             row["izin"], row["sakit"], row["cuti"], row["alpa"],
             row["terlambat"], row["menit_terlambat"], row["pulang_cepat"], row["menit_pulang_cepat"],
             row["jam_kerja"], row["jam_kerja_libur"], row["menit_lembur"], row["menit_lembur_libur"],
-            row["kehadiran_pct"], status_periode,
+            row["kehadiran_pct"], row["pembagi_hari_kerja"], row["hari_dibayar"], row["gaji_prorata_persen"],
+            status_periode,
         ]
         for c, v in enumerate(values):
             name = PAYROLL_COLUMNS[c][0]
@@ -581,7 +595,7 @@ def export_payroll(
                 ws.write_string(r, c, v, text if name in ("nik", "nama", "departemen", "periode_awal", "periode_akhir") else None)
             elif v is None:
                 ws.write_blank(r, c, None)  # tingkat kehadiran kosong bila tidak ada hari kerja tercatat
-            elif name in ("total_jam_kerja", "jam_kerja_hari_libur"):
+            elif name in ("total_jam_kerja", "jam_kerja_hari_libur", "gaji_prorata_persen"):
                 ws.write_number(r, c, v, dec2)
             elif name == "tingkat_kehadiran_persen":
                 ws.write_number(r, c, v, dec1)

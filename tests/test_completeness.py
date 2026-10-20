@@ -47,7 +47,12 @@ def test_completeness_counts(client):
 
     sumber = {s["kode"]: s for s in body["sumber"]}
     assert sumber["presensi"]["status"] == "tersedia"
-    assert sumber["activity"]["status"] == "belum" and sumber["approval"]["status"] == "belum"
+    # Rilis B sudah tersedia: keempat sumber kini berstatus tersedia.
+    for kode in ("activity", "report", "timeoff", "approval"):
+        assert sumber[kode]["status"] == "tersedia"
+    # Indikator baru ada di respons (kosong pada data template lama).
+    assert body["selisih_report"] == [] and body["koreksi_setelah_tutup"] == []
+    assert body["ringkasan"]["baris_selisih_report"] == 0
 
 
 def test_completeness_hr_only(client):

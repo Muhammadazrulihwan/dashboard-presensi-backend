@@ -108,3 +108,33 @@ def test_standard_recap_now_includes_overtime_and_hours(client):
     assert ani["Total Menit Lembur"] == 10 and ani["Total Jam Kerja"] == 26.92 and ani["Pulang Cepat"] == 1
     dept = pl.read_excel(io.BytesIO(r.content), sheet_name="Rekap per Divisi", engine="calamine")
     assert dept.filter(pl.col("Divisi") == "HR").row(0, named=True)["Total Menit Lembur"] == 90
+
+
+# ---------- Pembagi hari kerja payroll (PRD F29) ----------
+
+def test_payroll_workday_divisor_setting(client):
+    upload(client)
+    # Default 25
+    assert client.get("/settings/payroll").json() == {"payroll_workdays": 25}
+    _, df = payroll(client, **RANGE)
+    ani = by_nik(df)["001"]
+    assert ani["pembagi_hari_kerja"] == 25
+    # Ani: hadir 3 + izin 1 = 4 hari dibayar (alpa tidak dibayar); 4/25*100 = 16.0
+    assert ani["hari_dibayar"] == 4 and ani["gaji_prorata_persen"] == 16.0
+    # Budi: hadir 2 + dinas 1 + sakit 1 + cuti 1 = 5 hari; 5/25*100 = 20.0
+    assert by_nik(df)["002"]["hari_dibayar"] == 5 and by_nik(df)["002"]["gaji_prorata_persen"] == 20.0
+
+    # Ubah pembagi ke 22 -> persen berubah
+    assert client.put("/settings/payroll", json={"payroll_workdays": 22}).json() == {"payroll_workdays": 22}
+    _, df = payroll(client, **RANGE)
+    ani = by_nik(df)["001"]
+    assert ani["pembagi_hari_kerja"] == 22 and ani["gaji_prorata_persen"] == round(4 * 100 / 22, 2)
+
+
+def test_payroll_divisor_validation_and_access(client):
+    assert client.put("/settings/payroll", json={"payroll_workdays": 0}).status_code == 422
+    assert client.put("/settings/payroll", json={"payroll_workdays": 40}).status_code == 422
+    as_dept("Audit")  # Audit boleh lihat payroll tapi tidak mengubah pengaturan
+    assert client.get("/settings/payroll").status_code == 403
+    as_dept("HR")
+    assert client.put("/settings/payroll", json={"payroll_workdays": 25}).status_code == 200

@@ -9,7 +9,10 @@ import polars as pl
 from app.db import get_db
 from app.deps import HR, get_current_user
 from app.models import Attendance as A, Holiday, ShiftRule, User
-from app.schemas import HolidayIn, HolidayOut, RecalcRequest, RecalcResponse, ShiftIn, ShiftOut
+from app.schemas import (
+    HolidayIn, HolidayOut, PayrollSettingsIn, PayrollSettingsOut, RecalcRequest, RecalcResponse, ShiftIn, ShiftOut,
+)
+from app.services import app_settings
 from app.services import audit
 from app.services.calculator import compute
 from app.services.period import ensure_open
@@ -88,6 +91,21 @@ def delete_holiday(holiday_id: int, db: Session = Depends(get_db)):
         raise HTTPException(404, "Hari libur tidak ditemukan")
     db.delete(row)
     db.commit()
+
+
+@router.get("/payroll", response_model=PayrollSettingsOut)
+def get_payroll_settings(db: Session = Depends(get_db)):
+    """Pembagi hari kerja Rekap Payroll (PRD F29). Default 25."""
+    return PayrollSettingsOut(payroll_workdays=app_settings.payroll_workdays(db))
+
+
+@router.put("/payroll", response_model=PayrollSettingsOut)
+def save_payroll_settings(body: PayrollSettingsIn, request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    app_settings.set_int(db, app_settings.PAYROLL_WORKDAYS, body.payroll_workdays)
+    audit.log(db, user.id, "payroll_settings_update", {"payroll_workdays": body.payroll_workdays},
+              request.client.host if request.client else None)
+    db.commit()
+    return PayrollSettingsOut(payroll_workdays=body.payroll_workdays)
 
 
 @router.post("/recalculate", response_model=RecalcResponse)

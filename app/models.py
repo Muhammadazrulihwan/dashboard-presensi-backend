@@ -297,6 +297,18 @@ class Period(Base):
     )
 
 
+class AppSetting(Base):
+    """Pengaturan aplikasi yang bisa diubah HR tanpa deploy ulang (key-value).
+
+    Dipakai antara lain untuk pembagi hari kerja Rekap Payroll (PRD F29, default 25).
+    """
+
+    __tablename__ = "app_settings"
+    kunci: Mapped[str] = mapped_column(String(60), primary_key=True)
+    nilai: Mapped[str] = mapped_column(String(255))
+    diperbarui_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class AuditLog(Base):
     __tablename__ = "audit_log"
     id: Mapped[int] = mapped_column(BigId, primary_key=True)

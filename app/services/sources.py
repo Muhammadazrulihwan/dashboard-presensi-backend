@@ -184,6 +184,21 @@ def _to_minutes(v) -> int | None:
     return None
 
 
+def _to_duration_minutes(v) -> int | None:
+    """Kolom Late In / Early Out di Report Attendance bisa berupa HH:MM atau jumlah menit polos (mis. "15")."""
+    if v is None:
+        return None
+    s = str(v).strip()
+    if not s or s.lower() in ("none", "nan", "null"):
+        return None
+    if ":" in s:
+        return _to_minutes(s)
+    try:
+        return int(round(float(s.replace(",", "."))))
+    except ValueError:
+        return None
+
+
 def _norm_shift(name: str | None) -> str | None:
     """Normalisasi nama shift: trim dan hapus titik di belakang (LSP-2. -> LSP-2)."""
     if not name:
@@ -310,8 +325,8 @@ def parse_report(path: Path) -> Parsed:
             "jadwal_pulang_menit": _to_minutes(r.get("jadwal_pulang")),
             "check_in_menit": _to_minutes(r.get("check_in")),
             "check_out_menit": _to_minutes(r.get("check_out")),
-            "late_in_menit": _to_minutes(r.get("late_in")),
-            "early_out_menit": _to_minutes(r.get("early_out")),
+            "late_in_menit": _to_duration_minutes(r.get("late_in")),
+            "early_out_menit": _to_duration_minutes(r.get("early_out")),
             "actual_hour": _to_float(r.get("actual_hour")),
             "real_hour": _to_float(r.get("real_hour")),
             "kode_kehadiran": (r.get("kode_kehadiran") or None),

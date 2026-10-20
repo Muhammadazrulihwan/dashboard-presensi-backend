@@ -74,6 +74,9 @@ def get_records(
             "id": r.id, "tanggal": r.tanggal, "nik": r.nik, "nama": r.nama, "departemen": r.departemen,
             "jam_masuk": min_to_hhmm(r.jam_masuk_menit), "jam_keluar": min_to_hhmm(r.jam_keluar_menit),
             "menit_terlambat": r.menit_terlambat, "durasi_kerja": r.durasi_kerja, "status": r.status, "keterangan": r.keterangan,
+            "jam_kerja_nyata": r.jam_kerja_nyata, "dikoreksi": bool(r.dikoreksi),
+            "koreksi_alasan": r.koreksi_alasan, "koreksi_approver": r.koreksi_approver,
+            "clock_out_hilang": bool(r.clock_out_hilang), "selisih_report": r.selisih_report,
         }
         for r in rows
     ]

@@ -68,6 +68,7 @@ ACTION_LABELS = {
     # Pengaturan (HR)
     "shift_upsert": "Simpan Shift",
     "recalculate": "Hitung Ulang Presensi",
+    "payroll_settings_update": "Ubah Pembagi Hari Kerja Payroll",
     # Tutup periode (HR)
     "period_close": "Tutup Periode",
     "period_reopen": "Buka Kembali Periode",

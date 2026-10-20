@@ -62,6 +62,12 @@ class SummaryData(BaseModel):
     avg_selisih_masuk_menit: float | None = None
     karyawan: int
     records: int
+    # Rekap terpadu (Rilis B)
+    dikoreksi: int = 0
+    selisih_report: int = 0
+    clock_out_hilang: int = 0
+    koreksi_setelah_tutup: int = 0
+    jam_kerja_nyata: float | None = None
 
 
 class SummaryResponse(BaseModel):
@@ -111,6 +117,13 @@ class AttendanceOut(BaseModel):
     durasi_kerja: float | None
     status: str
     keterangan: str | None
+    # Rekap terpadu (Rilis B)
+    jam_kerja_nyata: float | None = None
+    dikoreksi: bool = False
+    koreksi_alasan: str | None = None
+    koreksi_approver: str | None = None
+    clock_out_hilang: bool = False
+    selisih_report: str | None = None
 
 
 class RecordsPage(BaseModel):
@@ -158,6 +171,8 @@ class CompletenessRingkasan(BaseModel):
     hari_tanpa_data: int
     baris_clock_out_hilang: int
     baris_clock_in_hilang: int
+    baris_selisih_report: int = 0
+    baris_koreksi_setelah_tutup: int = 0
 
 
 class CompletenessTanpaData(BaseModel):
@@ -191,6 +206,24 @@ class CompletenessSumber(BaseModel):
     catatan: str
 
 
+class CompletenessSelisih(BaseModel):
+    nik: str
+    nama: str
+    departemen: str
+    tanggal: date
+    selisih: str
+    menit_terlambat: int
+
+
+class CompletenessKoreksiTutup(BaseModel):
+    nik: str
+    nama: str
+    departemen: str
+    tanggal: date
+    alasan: str | None
+    approver: str | None
+
+
 class CompletenessResponse(BaseModel):
     periode: CompletenessPeriode
     hari_kerja_kalender: int
@@ -198,6 +231,8 @@ class CompletenessResponse(BaseModel):
     karyawan_tanpa_data: list[CompletenessTanpaData]
     clock_out_hilang: list[CompletenessKetukan]
     clock_in_hilang: list[CompletenessKetukan]
+    selisih_report: list[CompletenessSelisih] = []
+    koreksi_setelah_tutup: list[CompletenessKoreksiTutup] = []
     cakupan_bulan: list[CompletenessCakupan]
     sumber: list[CompletenessSumber]
 
@@ -235,6 +270,14 @@ class RecalcRequest(BaseModel):
 
 class RecalcResponse(BaseModel):
     updated: int
+
+
+class PayrollSettingsIn(BaseModel):
+    payroll_workdays: int = Field(ge=1, le=31)
+
+
+class PayrollSettingsOut(BaseModel):
+    payroll_workdays: int
 
 
 class UserOut(BaseModel):

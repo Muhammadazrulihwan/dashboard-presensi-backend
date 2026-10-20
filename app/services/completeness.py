@@ -1,16 +1,14 @@
-"""Kelengkapan Data (PRD F12).
+"""Kelengkapan Data (PRD F11, F12).
 
-Menghitung indikator yang bisa dibangun dari model `attendance` saat ini (satu file template):
+Indikator yang dihitung dari Rekap Absensi terpadu:
 
 - Hari kerja kalender vs hari kerja tercatat per karyawan (hari tanpa data).
-- Baris dengan jam masuk ada tetapi jam keluar kosong (clock out hilang).
-- Baris dengan jam keluar ada tetapi jam masuk kosong (clock in hilang).
+- Baris dengan jam masuk ada tetapi jam keluar kosong (clock out hilang) dan sebaliknya.
 - Cakupan data per bulan (periode_ym) pada rentang filter.
-- Status sumber data: sumber tunggal template tersedia; empat sumber PRD (Activity, Report
-  Attendance, Time Off, Approval) belum tersedia sampai parser Rilis B dibangun.
-
-Indikator PRD lain yang menunggu Rilis B (selisih terhadap Report Attendance dan koreksi setelah
-tutup bulan) sengaja tidak dihitung di sini karena datanya belum ada.
+- Selisih terhadap Report Attendance (F11): baris yang hasil sistemnya berbeda dari report.
+- Koreksi setelah tutup bulan (F12): koreksi yang diajukan setelah bulan efektifnya lewat.
+- Status sumber data: empat sumber PRD (Activity, Report Attendance, Time Off, Approval) tersedia
+  lewat upload paket; sumber template lama juga masih diterima.
 """
 from dataclasses import replace
 
@@ -21,18 +19,18 @@ from app.models import Attendance as A
 from app.services.aggregator import Filters, _where, recap, workdays_between
 from app.services.rules import min_to_hhmm
 
-# Empat sumber PRD bagian 3 ditambah sumber template yang dipakai sekarang.
+# Empat sumber PRD bagian 3 ditambah sumber template yang masih diterima.
 SUMBER = [
+    {"kode": "activity", "nama": "Activity", "status": "tersedia",
+     "catatan": "Diunggah lewat Paket Empat Sumber; sumber jam masuk dan pulang mentah."},
+    {"kode": "report", "nama": "Report Attendance", "status": "tersedia",
+     "catatan": "Jadwal shift dan pembanding; selisih ditandai, tidak menimpa hasil sistem."},
+    {"kode": "timeoff", "nama": "Time Off", "status": "tersedia",
+     "catatan": "Izin, cuti, sakit yang disetujui menentukan status hari."},
+    {"kode": "approval", "nama": "Approval", "status": "tersedia",
+     "catatan": "Koreksi absen disetujui menimpa jam clock in/out pada tanggal efektif."},
     {"kode": "presensi", "nama": "Presensi (file template)", "status": "tersedia",
-     "catatan": "Sumber tunggal yang dipakai upload saat ini."},
-    {"kode": "activity", "nama": "Activity", "status": "belum",
-     "catatan": "Parser empat sumber belum dibangun (Rilis B)."},
-    {"kode": "report", "nama": "Report Attendance", "status": "belum",
-     "catatan": "Parser empat sumber belum dibangun (Rilis B)."},
-    {"kode": "timeoff", "nama": "Time Off", "status": "belum",
-     "catatan": "Parser empat sumber belum dibangun (Rilis B)."},
-    {"kode": "approval", "nama": "Approval", "status": "belum",
-     "catatan": "Parser empat sumber belum dibangun (Rilis B)."},
+     "catatan": "Sumber tunggal lama; tetap didukung untuk upload satu file."},
 ]
 
 
@@ -62,6 +60,34 @@ def _missing(db: Session, f: Filters, kind: str) -> list[dict]:
     ]
 
 
+def _selisih(db: Session, f: Filters) -> list[dict]:
+    """Baris yang hasil sistemnya berbeda dari Report Attendance (PRD F11)."""
+    rows = db.execute(
+        select(A.nik, A.nama, A.departemen, A.tanggal, A.selisih_report, A.menit_terlambat)
+        .where(*_where(replace(f, status=None)), A.selisih_report.is_not(None))
+        .order_by(A.tanggal, A.nik)
+    ).all()
+    return [
+        {"nik": r.nik, "nama": r.nama, "departemen": r.departemen, "tanggal": r.tanggal,
+         "selisih": r.selisih_report, "menit_terlambat": r.menit_terlambat}
+        for r in rows
+    ]
+
+
+def _koreksi_tutup(db: Session, f: Filters) -> list[dict]:
+    """Koreksi yang diajukan setelah bulan efektifnya lewat (PRD F12)."""
+    rows = db.execute(
+        select(A.nik, A.nama, A.departemen, A.tanggal, A.koreksi_alasan, A.koreksi_approver)
+        .where(*_where(replace(f, status=None)), A.koreksi_setelah_tutup.is_(True))
+        .order_by(A.tanggal, A.nik)
+    ).all()
+    return [
+        {"nik": r.nik, "nama": r.nama, "departemen": r.departemen, "tanggal": r.tanggal,
+         "alasan": r.koreksi_alasan, "approver": r.koreksi_approver}
+        for r in rows
+    ]
+
+
 def completeness(db: Session, f: Filters) -> dict:
     """Ringkasan kelengkapan data pada rentang filter."""
     d1, d2 = _range(db, f)
@@ -73,10 +99,13 @@ def completeness(db: Session, f: Filters) -> dict:
             "ringkasan": {
                 "karyawan": 0, "karyawan_lengkap": 0, "karyawan_tanpa_data": 0,
                 "hari_tanpa_data": 0, "baris_clock_out_hilang": 0, "baris_clock_in_hilang": 0,
+                "baris_selisih_report": 0, "baris_koreksi_setelah_tutup": 0,
             },
             "karyawan_tanpa_data": [],
             "clock_out_hilang": [],
             "clock_in_hilang": [],
+            "selisih_report": [],
+            "koreksi_setelah_tutup": [],
             "cakupan_bulan": [],
             "sumber": SUMBER,
         }
@@ -97,6 +126,8 @@ def completeness(db: Session, f: Filters) -> dict:
 
     out_rows = _missing(db, f, "out")
     in_rows = _missing(db, f, "in")
+    selisih_rows = _selisih(db, f)
+    koreksi_rows = _koreksi_tutup(db, f)
 
     coverage = db.execute(
         select(
@@ -120,10 +151,14 @@ def completeness(db: Session, f: Filters) -> dict:
             "hari_tanpa_data": sum(x["hari_tanpa_data"] for x in tanpa_data),
             "baris_clock_out_hilang": len(out_rows),
             "baris_clock_in_hilang": len(in_rows),
+            "baris_selisih_report": len(selisih_rows),
+            "baris_koreksi_setelah_tutup": len(koreksi_rows),
         },
         "karyawan_tanpa_data": tanpa_data,
         "clock_out_hilang": out_rows,
         "clock_in_hilang": in_rows,
+        "selisih_report": selisih_rows,
+        "koreksi_setelah_tutup": koreksi_rows,
         "cakupan_bulan": [
             {"periode": r.periode, "karyawan": int(r.karyawan), "baris": int(r.baris), "hari_kerja": int(r.hari_kerja)}
             for r in coverage
