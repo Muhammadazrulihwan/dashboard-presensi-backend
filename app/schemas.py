@@ -434,3 +434,29 @@ class PackageConfirmResponse(BaseModel):
     skipped: int
     sumber: dict[str, int] = {}
     employees: int = 0
+
+
+# ========== Tutup/buka periode (PRD F13) ==========
+
+class PeriodOut(BaseModel):
+    tahun: int
+    bulan: int
+    periode: str  # "YYYY-MM"
+    ditutup: bool
+    ditutup_oleh: str | None = None
+    ditutup_at: datetime | None = None
+    alasan: str | None = None
+    # Jumlah baris rekap pada bulan itu, untuk memberi konteks sebelum menutup.
+    records: int = 0
+
+
+class PeriodCloseRequest(BaseModel):
+    tahun: int = Field(ge=2000, le=2100)
+    bulan: int = Field(ge=1, le=12)
+    alasan: str | None = Field(None, max_length=500)
+
+
+class PeriodReopenRequest(BaseModel):
+    tahun: int = Field(ge=2000, le=2100)
+    bulan: int = Field(ge=1, le=12)
+    alasan: str = Field(min_length=1, max_length=500)

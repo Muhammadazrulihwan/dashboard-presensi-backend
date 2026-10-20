@@ -25,6 +25,7 @@ from app.services.importer import (
     clear_sources, find_conflicts, import_rows, save_rekap, save_sources, upsert_employees,
 )
 from app.services.merge import build_employee_master, merge
+from app.services.period import ensure_open
 from app.services.rules import holidays_list, rules_frame, rules_map
 from app.services.sources import SourceError, parse_source
 from app.services.validator import validate
@@ -179,6 +180,11 @@ def confirm(
         raise HTTPException(409, "File tidak lolos validasi")
 
     computed = compute(result.clean, rules_frame(db), holidays_list(db))
+    # Periode tertutup tidak boleh diubah (PRD F13).
+    try:
+        ensure_open(db, computed["tanggal"].min(), computed["tanggal"].max())
+    except ValueError as e:
+        raise HTTPException(409, str(e))
     conflicts = find_conflicts(db, computed)
     mode = body.mode if body else None
     if conflicts.height and mode is None:
@@ -380,6 +386,11 @@ def package_confirm(
 
     try:
         rows, d1, d2 = _merge_from_parsed(db, parsed)
+        # Periode tertutup tidak boleh diubah (PRD F13).
+        try:
+            ensure_open(db, d1, d2)
+        except ValueError as e:
+            raise HTTPException(409, str(e))
         # Data mentah diganti untuk rentang tanggal yang sama, lalu rekap disimpan.
         clear_sources(db, d1, d2)
         sumber = save_sources(db, up.id, parsed)

@@ -529,7 +529,7 @@ PAYROLL_COLUMNS = [
     ("total_menit_lembur", "Menit kerja setelah jam selesai shift, semua hari. Kerja di hari libur hanya terhitung lembur untuk menit setelah jam selesai shift"),
     ("menit_lembur_hari_libur", "Bagian dari total_menit_lembur yang terjadi pada hari Minggu atau hari libur"),
     ("tingkat_kehadiran_persen", "(hari_hadir ditambah hari_dinas_luar) dibagi hari_kerja_tercatat, dikali 100"),
-    ("status_periode", "DRAFT: periode belum ditutup. Fitur Tutup periode belum tersedia sehingga semua rekap berstatus DRAFT"),
+    ("status_periode", "DITUTUP bila seluruh bulan dalam rentang sudah ditutup di menu Tutup Periode; selain itu DRAFT"),
 ]
 
 
@@ -546,6 +546,12 @@ def export_payroll(
     if (f.date_to - f.date_from).days > 366:
         raise HTTPException(422, "Rentang Rekap Payroll maksimal satu tahun")
     rows = agg.payroll_rows(db, f)
+    # Status periode mengikuti menu Tutup Periode (PRD F13).
+    from app.services.period import closed_months_in_range
+
+    closed = closed_months_in_range(db, f.date_from, f.date_to)
+    total_months = (f.date_to.year - f.date_from.year) * 12 + (f.date_to.month - f.date_from.month) + 1
+    status_periode = "DITUTUP" if len(closed) >= total_months else "DRAFT"
 
     buf = io.BytesIO()
     wb = xlsxwriter.Workbook(buf, {"in_memory": True})
@@ -567,7 +573,7 @@ def export_payroll(
             row["izin"], row["sakit"], row["cuti"], row["alpa"],
             row["terlambat"], row["menit_terlambat"], row["pulang_cepat"], row["menit_pulang_cepat"],
             row["jam_kerja"], row["jam_kerja_libur"], row["menit_lembur"], row["menit_lembur_libur"],
-            row["kehadiran_pct"], "DRAFT",
+            row["kehadiran_pct"], status_periode,
         ]
         for c, v in enumerate(values):
             name = PAYROLL_COLUMNS[c][0]
@@ -591,7 +597,7 @@ def export_payroll(
     notes = wb.add_worksheet("Catatan")
     notes.set_column(0, 0, 30)
     notes.set_column(1, 1, 120)
-    notes.write(0, 0, "Rekap Payroll (DRAFT)", bold)
+    notes.write(0, 0, f"Rekap Payroll ({status_periode})", bold)
     info = [("Periode", _period_text(f)), ("Divisi", f.departemen or "Semua divisi"), ("Karyawan", f.karyawan or "Semua karyawan"),
             ("Dibuat", f"{_now()} oleh {user.full_name}"), ("Jumlah karyawan", str(len(rows)))]
     for i, (k, v) in enumerate(info, start=1):
@@ -616,5 +622,5 @@ def export_payroll(
     return Response(
         buf.getvalue(),
         media_type=XLSX,
-        headers={"Content-Disposition": f'attachment; filename="rekap_payroll_{f.date_from}_{f.date_to}_DRAFT.xlsx"'},
+        headers={"Content-Disposition": f'attachment; filename="rekap_payroll_{f.date_from}_{f.date_to}_{status_periode}.xlsx"'},
     )

@@ -68,6 +68,9 @@ ACTION_LABELS = {
     # Pengaturan (HR)
     "shift_upsert": "Simpan Shift",
     "recalculate": "Hitung Ulang Presensi",
+    # Tutup periode (HR)
+    "period_close": "Tutup Periode",
+    "period_reopen": "Buka Kembali Periode",
     # Arsip file (HR dan Audit)
     "archive_download": "Unduh Arsip",
     "archive_trash": "Pindah Arsip ke Tempat Sampah",

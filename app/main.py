@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.db import SessionLocal
-from app.routers import admin, archive, auth, dashboard, exports, sales, settings as settings_router, uploads
+from app.routers import admin, archive, auth, dashboard, exports, periods, sales, settings as settings_router, uploads
 from app.routers.audit import router as audit_router
 from app.services.bootstrap import check_production_settings, ensure_admin, ensure_departments
 from app.services.cleanup import purge_stale_uploads
@@ -44,6 +44,7 @@ app.include_router(admin.router)
 app.include_router(audit_router)
 app.include_router(sales.router)
 app.include_router(archive.router)
+app.include_router(periods.router)
 
 
 @app.get("/health")

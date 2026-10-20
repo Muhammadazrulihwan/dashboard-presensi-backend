@@ -12,6 +12,7 @@ from app.models import Attendance as A, Holiday, ShiftRule, User
 from app.schemas import HolidayIn, HolidayOut, RecalcRequest, RecalcResponse, ShiftIn, ShiftOut
 from app.services import audit
 from app.services.calculator import compute
+from app.services.period import ensure_open
 from app.services.rules import DEFAULT_SHIFT, hhmm_to_min, holidays_list, min_to_hhmm, rules_frame
 
 router = APIRouter(prefix="/settings", tags=["pengaturan"], dependencies=[HR])
@@ -94,6 +95,10 @@ def recalculate(body: RecalcRequest, request: Request, db: Session = Depends(get
     """Hitung ulang status, keterlambatan, durasi, dan lembur untuk satu periode memakai aturan terbaru."""
     if body.date_from > body.date_to:
         raise HTTPException(422, "Tanggal awal tidak boleh setelah tanggal akhir")
+    try:
+        ensure_open(db, body.date_from, body.date_to)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
     rows = db.execute(
         select(A.id, A.nik, A.nama, A.tanggal, A.departemen, A.shift, A.jam_masuk_menit, A.jam_keluar_menit, A.status_file, A.keterangan, A.lokasi_kerja)
         .where(A.tanggal >= body.date_from, A.tanggal <= body.date_to)
