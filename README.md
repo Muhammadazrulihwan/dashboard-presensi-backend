@@ -20,6 +20,27 @@ Tanpa file `.env`, data disimpan di SQLite (`dev.db`). Untuk PostgreSQL: `docker
 ```powershell
 pytest
 ```
+Default tes memakai SQLite sementara (cepat, tanpa setup). Untuk menguji perilaku MySQL 8.0 yang sesungguhnya
+(PRD Bab 9), arahkan tes ke database uji terpisah lewat `TEST_DATABASE_URL`. Database itu dibuat kosong dan
+skemanya dibangun/di-reset otomatis lewat Alembic setiap sesi tes.
+
+```powershell
+# 1. Buat database uji (contoh memakai MySQL lokal)
+mysql -u root -e "CREATE DATABASE presensi_test CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+
+# 2. Jalankan tes terhadap MySQL
+$env:TEST_DATABASE_URL="mysql+pymysql://presensi_app:PASSWORD@127.0.0.1:3306/presensi_test?charset=utf8mb4"
+pytest
+```
+
+Jangan mengarahkan `TEST_DATABASE_URL` ke database berisi data nyata: tes menurunkan dan membangun ulang skema.
+
+## Migrasi
+```powershell
+alembic upgrade head       # naik ke versi terbaru
+alembic downgrade base     # turunkan semua (untuk uji bersih)
+alembic current            # versi aktif
+```
 
 ## Endpoint
 | Method | Path | Peran | Keterangan |

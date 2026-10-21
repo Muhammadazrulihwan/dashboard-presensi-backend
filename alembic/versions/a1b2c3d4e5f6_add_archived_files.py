@@ -51,8 +51,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Downgrade schema."""
+    # Index pada kolom FK (upload_id, pengunggah_id, dihapus_oleh) tidak di-drop terpisah:
+    # MySQL menolak menghapus index yang masih dipakai foreign key; op.drop_table menanganinya.
     with op.batch_alter_table('archived_files', schema=None) as batch_op:
-        batch_op.drop_index(batch_op.f('ix_archived_files_upload_id'))
         batch_op.drop_index('ix_archived_files_status')
         batch_op.drop_index('ix_archived_files_periode')
         batch_op.drop_index('ix_archived_files_created')

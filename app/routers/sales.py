@@ -165,6 +165,10 @@ def confirm_sales_upload(
         raise HTTPException(404, "Upload tidak ditemukan")
     if up.status != UploadStatus.validated:
         raise HTTPException(409, "Upload ini sudah disimpan atau tidak lolos validasi")
+    # Kunci baris upload agar dua permintaan konfirmasi bersamaan tidak memproses data dua kali.
+    up = db.scalar(select(Upload).where(Upload.id == upload_id).with_for_update())
+    if up is None or up.status != UploadStatus.validated:
+        raise HTTPException(409, "Upload ini sudah disimpan atau tidak lolos validasi")
     
     # Parse ulang file
     try:
@@ -472,7 +476,8 @@ def _presensi_warnings(db: Session, df_penjualan) -> list[str]:
             shown = ", ".join(missing[:5]) + (f" dan {len(missing) - 5} lainnya" if len(missing) > 5 else "")
             out.append(f"{len(missing)} salesman periode {periode} tidak ditemukan di data presensi ({shown})")
 
-        # NIK ada di presensi tetapi tercatat di departemen lain: kemungkinan employee_id bukan NIK karyawan yang sama
+        # NIK ada di presensi tetapi tercatat di departemen lain: kemungkinan employee_id bukan NIK karyawan yang sama.
+        # Untuk NIK yang tidak ada di presensi periode itu, pakai master karyawan sebagai cadangan.
         beda: dict[str, set[str]] = {}
         for nik, dept in db.execute(
             select(Attendance.nik, Attendance.departemen)
@@ -480,6 +485,14 @@ def _presensi_warnings(db: Session, df_penjualan) -> list[str]:
         ):
             if (dept or "").strip().lower() not in settings.sales_orgs:
                 beda.setdefault(nik, set()).add(dept or "-")
+        if missing:
+            from app.models import Employee
+
+            for nik, org in db.execute(
+                select(Employee.employee_id, Employee.organisasi).where(Employee.employee_id.in_(missing))
+            ):
+                if org and org.strip().lower() not in settings.sales_orgs:
+                    beda.setdefault(nik, set()).add(f"{org} (master karyawan)")
         if beda:
             items = [f"{nik} ({', '.join(sorted(d))})" for nik, d in sorted(beda.items())]
             shown = ", ".join(items[:5]) + (f" dan {len(items) - 5} lainnya" if len(items) > 5 else "")

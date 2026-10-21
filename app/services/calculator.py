@@ -10,6 +10,11 @@ DB_COLUMNS = [
     "nik", "nama", "tanggal", "periode_ym", "departemen", "shift", "jam_masuk_menit", "jam_keluar_menit",
     "status_file", "status", "keterangan", "lokasi_kerja", "hari_kerja", "menit_terlambat", "terlambat",
     "menit_pulang_cepat", "durasi_kerja", "menit_lembur",
+    # Kolom Rekap Absensi terpadu tidak dihitung ulang di sini; disertakan agar DataFrame hasil compute
+    # tetap punya bentuk yang sama dan insert ke tabel attendance tidak gagal karena kolom hilang.
+    "jam_kerja_nyata", "jumlah_ketukan", "clock_out_hilang", "clock_in_hilang", "sumber", "dikoreksi",
+    "koreksi_alasan", "koreksi_approver", "koreksi_setelah_tutup", "izin_kode", "izin_nama", "izin_tipe",
+    "selisih_report", "status_report",
 ]
 
 
@@ -70,4 +75,25 @@ def compute(df: pl.DataFrame, rules: pl.DataFrame, holidays: list[date]) -> pl.D
         periode_ym=pl.col("tanggal").dt.strftime("%Y-%m"),
         status_file=pl.col("status_in"),
     ).with_columns(terlambat=pl.col("menit_terlambat") > 0)
+
+    # Kolom Rekap Absensi terpadu tidak berasal dari file template lama: isi dengan nilai kosong/default.
+    null_i64 = pl.lit(None, dtype=pl.Int64)
+    null_f64 = pl.lit(None, dtype=pl.Float64)
+    null_str = pl.lit(None, dtype=pl.Utf8)
+    d = d.with_columns(
+        jam_kerja_nyata=null_f64,
+        jumlah_ketukan=null_i64,
+        clock_out_hilang=pl.lit(False, dtype=pl.Boolean),
+        clock_in_hilang=pl.lit(False, dtype=pl.Boolean),
+        sumber=null_str,
+        dikoreksi=pl.lit(False, dtype=pl.Boolean),
+        koreksi_alasan=null_str,
+        koreksi_approver=null_str,
+        koreksi_setelah_tutup=pl.lit(False, dtype=pl.Boolean),
+        izin_kode=null_str,
+        izin_nama=null_str,
+        izin_tipe=null_str,
+        selisih_report=null_str,
+        status_report=null_str,
+    )
     return d.select(DB_COLUMNS)

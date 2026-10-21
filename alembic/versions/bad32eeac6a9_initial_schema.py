@@ -106,11 +106,8 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Downgrade schema."""
-    with op.batch_alter_table('attendance', schema=None) as batch_op:
-        batch_op.drop_index(batch_op.f('ix_attendance_upload_id'))
-        batch_op.drop_index('ix_attendance_tanggal_dept')
-        batch_op.drop_index('ix_attendance_nik')
-
+    # Index pada kolom FK (attendance.upload_id) tidak di-drop terpisah: MySQL menolak menghapus
+    # index yang masih dipakai foreign key; op.drop_table menghapus index beserta tabelnya.
     op.drop_table('attendance')
     op.drop_table('uploads')
     op.drop_table('audit_log')

@@ -234,7 +234,9 @@ def merge(
             "izin_nama": izin.get("policy_name") if izin else None,
             "izin_tipe": izin.get("tipe") if izin else None,
             "selisih_report": selisih,
-            "status_report": status_file,
+            # Sama dengan status_file: jangan diisi kode kehadiran Report, karena
+            # attendance.status_file menyimpan kode asli dan rekap dihitung ulang dari data mentah.
+            "status_report": None,
         })
     return rows
 

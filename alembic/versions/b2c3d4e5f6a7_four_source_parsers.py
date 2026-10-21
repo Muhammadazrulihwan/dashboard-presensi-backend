@@ -174,28 +174,22 @@ def downgrade() -> None:
         ]:
             batch_op.drop_column(col)
 
+    # Index pada kolom FK (upload_id) tidak di-drop terpisah: MySQL menolak menghapus index yang
+    # masih dipakai foreign key, sedangkan op.drop_table sudah menghapus index beserta tabelnya.
     with op.batch_alter_table('attendance_corrections', schema=None) as batch_op:
         batch_op.drop_index('ix_correction_emp_tgl')
-        batch_op.drop_index(batch_op.f('ix_attendance_corrections_upload_id'))
     op.drop_table('attendance_corrections')
 
     with op.batch_alter_table('time_off_requests', schema=None) as batch_op:
         batch_op.drop_index('ix_time_off_emp_mulai')
-        batch_op.drop_index(batch_op.f('ix_time_off_requests_upload_id'))
     op.drop_table('time_off_requests')
 
-    with op.batch_alter_table('raw_report', schema=None) as batch_op:
-        batch_op.drop_index(batch_op.f('ix_raw_report_upload_id'))
     op.drop_table('raw_report')
 
     with op.batch_alter_table('raw_activity', schema=None) as batch_op:
         batch_op.drop_index('ix_raw_activity_emp_tgl')
-        batch_op.drop_index(batch_op.f('ix_raw_activity_upload_id'))
     op.drop_table('raw_activity')
 
     op.drop_table('periods')
     op.drop_table('employees')
-
-    with op.batch_alter_table('upload_files', schema=None) as batch_op:
-        batch_op.drop_index(batch_op.f('ix_upload_files_upload_id'))
     op.drop_table('upload_files')

@@ -64,7 +64,8 @@ class User(Base):
     full_name: Mapped[str] = mapped_column(String(150))
     password_hash: Mapped[str] = mapped_column(Text)
     # Hak akses ditentukan departemen (nilai baku), bukan peran. Kosong = tidak boleh membuka dashboard.
-    departemen: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # Indeks dipakai pemeriksaan hak akses dan hitungan admin IT aktif yang berjalan di setiap request.
+    departemen: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
     # Penanda penyetuju untuk akun Sales/Marketing yang boleh menyetujui Penilaian Kinerja Penjualan (F32)
     is_approver: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
