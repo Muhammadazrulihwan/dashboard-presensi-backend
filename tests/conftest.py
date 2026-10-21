@@ -25,8 +25,9 @@ from app.db import SessionLocal, engine  # noqa: E402
 from app.deps import get_current_user  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import (
-    ArchivedFile, Attendance, AttendanceCorrection, AuditLog, Employee, Holiday, Period, RawActivity, RawReport,
-    SalesAssessment, SalesPerformance, SalesTarget, ShiftRule, TimeOffRequest, Upload, UploadFile, User,
+    ArchivedFile, ArchivedFileEmployee, Attendance, AttendanceCorrection, AuditLog, Employee, Holiday, Period,
+    RawActivity, RawReport, SalesAssessment, SalesPerformance, SalesTarget, ShiftRule, TimeOffRequest, Upload,
+    UploadFile, User,
 )
 
 USING_MYSQL = engine.dialect.name == "mysql"
@@ -72,6 +73,7 @@ def clean_db(client, request):
         # Urutan hapus: anak lebih dulu agar foreign key MySQL tidak menolak.
         db.execute(delete(Attendance))
         db.execute(delete(UploadFile))
+        db.execute(delete(ArchivedFileEmployee))
         db.execute(delete(ArchivedFile))
         db.execute(delete(SalesAssessment))
         db.execute(delete(SalesPerformance))

@@ -444,3 +444,23 @@ class ArchivedFile(Base):
         Index("ix_archived_files_periode", "periode_awal", "periode_akhir"),
         Index("ix_archived_files_created", "created_at"),
     )
+
+
+class ArchivedFileEmployee(Base):
+    """Employee ID yang tercatat pada satu file arsip (PRD F23: cari arsip berdasarkan Employee ID).
+
+    Tabel anak ternormalisasi, bukan kolom JSON, agar pencarian ID presisi (bukan kecocokan substring)
+    dan berperilaku sama di SQLite maupun MySQL.
+    """
+
+    __tablename__ = "archived_file_employees"
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True)
+    archive_id: Mapped[int] = mapped_column(
+        ForeignKey("archived_files.id", ondelete="CASCADE"), index=True
+    )
+    employee_id: Mapped[str] = mapped_column(String(30))
+
+    __table_args__ = (
+        UniqueConstraint("archive_id", "employee_id", name="uq_archived_file_employee"),
+        Index("ix_archived_file_employees_emp", "employee_id"),
+    )

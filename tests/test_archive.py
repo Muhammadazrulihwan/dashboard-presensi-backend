@@ -5,7 +5,7 @@ import pytest
 from sqlalchemy import select
 
 from app.db import SessionLocal
-from app.models import ArchiveStatus, ArchivedFile
+from app.models import ArchiveStatus, ArchivedFile, ArchivedFileEmployee
 from tests.conftest import as_dept
 from tests.test_presensi import upload
 
@@ -13,6 +13,9 @@ from tests.test_presensi import upload
 @pytest.fixture(autouse=True)
 def _clean_archive():
     with SessionLocal() as db:
+        # Hapus tabel anak lebih dulu: SQLite tidak menegakkan ON DELETE CASCADE secara default,
+        # sehingga baris anak akan tertinggal dan membuat id arsip baru bentrok pada unique constraint.
+        db.query(ArchivedFileEmployee).delete()
         db.query(ArchivedFile).delete()
         db.commit()
     yield
@@ -48,6 +51,26 @@ def test_archive_search_and_download(client):
     r = client.get(f"/archive/{fid}/download")
     assert r.status_code == 200 and r.content.startswith(b"nik,")  # isi file asli (CSV) utuh
     assert "attachment" in r.headers["content-disposition"]
+
+
+def test_archive_search_by_employee_id(client):
+    """PRD F23: arsip bisa dicari berdasarkan Employee ID yang tercatat di file."""
+    upload(client)  # CSV_OK berisi NIK 001 (Ani) dan 002 (Budi)
+
+    page = client.get("/archive").json()
+    assert page["total"] == 1
+    item = page["items"][0]
+    assert sorted(item["employee_ids"]) == ["001", "002"]
+
+    # Cocok presisi per karyawan
+    assert client.get("/archive", params={"employee_id": "001"}).json()["total"] == 1
+    assert client.get("/archive", params={"employee_id": "002"}).json()["total"] == 1
+    # Tidak ada yang cocok
+    assert client.get("/archive", params={"employee_id": "999"}).json()["total"] == 0
+    # Presisi, bukan substring: "00" tidak boleh mencocokkan "001"/"002"
+    assert client.get("/archive", params={"employee_id": "00"}).json()["total"] == 0
+    # Pencarian ID tidak peka huruf besar-kecil dan spasi di tepi diabaikan
+    assert client.get("/archive", params={"employee_id": " 001 "}).json()["total"] == 1
 
 
 def test_trash_restore_and_purge_flow(client):

@@ -201,7 +201,8 @@ def confirm_sales_upload(
             y0, m0 = map(int, periods[0].split("-"))
             y1, m1 = map(int, periods[-1].split("-"))
             awal, akhir = date(y0, m0, 1), date(y1, m1, calendar.monthrange(y1, m1)[1])
-        archive_upload(db, up, "penjualan", periode_awal=awal, periode_akhir=akhir)
+        archive_upload(db, up, "penjualan", periode_awal=awal, periode_akhir=akhir,
+                       employee_ids=set(result.clean_penjualan["employee_id"].unique().to_list()))
 
         audit.log(db, user.id, "sales_confirm", {
             "upload_id": up.id,

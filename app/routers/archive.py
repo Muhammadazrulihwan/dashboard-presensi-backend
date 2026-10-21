@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db import get_db
 from app.deps import HR_ONLY, get_current_user, require_department
-from app.models import ArchiveStatus, ArchivedFile, Department, User
+from app.models import ArchiveStatus, ArchivedFile, ArchivedFileEmployee, Department, User
 from app.schemas import ArchivedFileOut, ArchivedFilePage, TrashRequest
 from app.services import archive as svc
 from app.services import audit
@@ -36,7 +36,7 @@ def _aware(dt: datetime | None) -> datetime | None:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
-def _out(row: ArchivedFile, uploader: str | None) -> ArchivedFileOut:
+def _out(row: ArchivedFile, uploader: str | None, employee_ids: list[str] | None = None) -> ArchivedFileOut:
     return ArchivedFileOut(
         id=row.id,
         upload_id=row.upload_id,
@@ -53,6 +53,7 @@ def _out(row: ArchivedFile, uploader: str | None) -> ArchivedFileOut:
         dihapus_at=row.dihapus_at,
         alasan_hapus=row.alasan_hapus,
         bisa_dihapus_permanen=svc.can_purge(row),
+        employee_ids=employee_ids or [],
     )
 
 
@@ -62,13 +63,15 @@ def list_archive(
     jenis_sumber: str | None = None,
     pengunggah_id: int | None = None,
     q: str | None = None,
+    employee_id: str | None = None,
     dari: date | None = None,
     sampai: date | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
 ):
-    """Cari arsip. `q` mencocokkan nama file; `dari`/`sampai` mencocokkan rentang tanggal data."""
+    """Cari arsip. `q` mencocokkan nama file; `employee_id` mencocokkan Employee ID yang tercatat di file;
+    `dari`/`sampai` mencocokkan rentang tanggal data."""
     conds = []
     if status != "semua":
         conds.append(ArchivedFile.status == ArchiveStatus(status))
@@ -79,6 +82,15 @@ def list_archive(
     if q:
         esc = q.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         conds.append(func.lower(ArchivedFile.nama_asli).like(f"%{esc}%", escape="\\"))
+    if employee_id and employee_id.strip():
+        # Pencocokan presisi (bukan substring) lewat tabel anak, agar "LS01" tidak ikut mencocokkan "LS019".
+        conds.append(
+            ArchivedFile.id.in_(
+                select(ArchivedFileEmployee.archive_id).where(
+                    func.lower(ArchivedFileEmployee.employee_id) == employee_id.strip().lower()
+                )
+            )
+        )
     if dari:
         conds.append(or_(ArchivedFile.periode_akhir.is_(None), ArchivedFile.periode_akhir >= dari))
     if sampai:
@@ -91,8 +103,9 @@ def list_archive(
         .offset((page - 1) * page_size).limit(page_size)
     ).all()
     names = svc.uploader_names(db, {r.pengunggah_id for r in rows if r.pengunggah_id})
+    emps = svc.employee_ids_map(db, [r.id for r in rows])
     return ArchivedFilePage(
-        items=[_out(r, names.get(r.pengunggah_id)) for r in rows],
+        items=[_out(r, names.get(r.pengunggah_id), emps.get(r.id)) for r in rows],
         total=total, page=page, page_size=page_size,
     )
 

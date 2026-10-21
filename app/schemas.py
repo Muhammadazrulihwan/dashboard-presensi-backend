@@ -428,6 +428,8 @@ class ArchivedFileOut(BaseModel):
     dihapus_at: datetime | None
     alasan_hapus: str | None
     bisa_dihapus_permanen: bool
+    # Employee ID yang tercatat pada file ini (PRD F23). Bisa kosong untuk arsip lama sebelum fitur ini.
+    employee_ids: list[str] = []
 
 
 class ArchivedFilePage(BaseModel):

@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models import ArchiveStatus, ArchivedFile, Upload, User
+from app.models import ArchiveStatus, ArchivedFile, ArchivedFileEmployee, Upload, User
 
 
 def _checksum(path: Path) -> str:
@@ -39,11 +39,15 @@ def archive_upload(
     *,
     periode_awal: date | None = None,
     periode_akhir: date | None = None,
+    employee_ids: set[str] | None = None,
 ) -> ArchivedFile | None:
     """Salin file upload ke arsip dan catat metadatanya. Tidak commit; pemanggil yang commit.
 
     Mengembalikan None bila file sumber sudah tidak ada (mis. sudah dibersihkan), supaya alur
     simpan data tidak gagal hanya karena arsip tidak bisa dibuat.
+
+    `employee_ids` menyimpan Employee ID yang tercatat pada file agar arsip bisa dicari berdasarkan ID
+    karyawan (PRD F23).
     """
     src = Path(up.stored_path)
     if not src.exists():
@@ -70,6 +74,9 @@ def archive_upload(
         status=ArchiveStatus.aktif,
     )
     db.add(row)
+    db.flush()  # perlu id untuk baris employee di bawah
+    for eid in sorted({e.strip() for e in (employee_ids or set()) if e and e.strip()}):
+        db.add(ArchivedFileEmployee(archive_id=row.id, employee_id=eid))
     return row
 
 
@@ -121,3 +128,18 @@ def uploader_names(db: Session, ids: set[int]) -> dict[int, str]:
         return {}
     rows = db.execute(select(User.id, User.full_name).where(User.id.in_(ids))).all()
     return {r.id: r.full_name for r in rows}
+
+
+def employee_ids_map(db: Session, archive_ids: list[int]) -> dict[int, list[str]]:
+    """Employee ID per file arsip, untuk ditampilkan di daftar arsip (PRD F23)."""
+    if not archive_ids:
+        return {}
+    rows = db.execute(
+        select(ArchivedFileEmployee.archive_id, ArchivedFileEmployee.employee_id)
+        .where(ArchivedFileEmployee.archive_id.in_(archive_ids))
+        .order_by(ArchivedFileEmployee.employee_id)
+    ).all()
+    out: dict[int, list[str]] = {}
+    for archive_id, eid in rows:
+        out.setdefault(archive_id, []).append(eid)
+    return out

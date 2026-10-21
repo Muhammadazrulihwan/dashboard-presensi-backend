@@ -194,7 +194,8 @@ def confirm(
         up.status, up.row_count = UploadStatus.saved, stats["inserted"]
         # Arsipkan file asli (PRD F22): disalin ke penyimpanan terpisah dengan checksum SHA-256.
         archive_upload(db, up, "presensi",
-                       periode_awal=computed["tanggal"].min(), periode_akhir=computed["tanggal"].max())
+                       periode_awal=computed["tanggal"].min(), periode_akhir=computed["tanggal"].max(),
+                       employee_ids=set(computed["nik"].unique().to_list()))
         audit.log(db, user.id, "upload_confirm", {"upload_id": up.id, "mode": mode, **stats}, _ip(request))
         db.commit()
     except Exception:
@@ -401,7 +402,8 @@ def package_confirm(
         mode = body.mode if body else None
         stats = save_rekap(db, up.id, rows, mode)
         up.status, up.row_count = UploadStatus.saved, stats["inserted"]
-        archive_upload(db, up, "presensi", periode_awal=d1, periode_akhir=d2)
+        archive_upload(db, up, "presensi", periode_awal=d1, periode_akhir=d2,
+                       employee_ids={r["nik"] for r in rows})
         audit.log(db, user.id, "package_confirm", {
             "upload_id": up.id, "mode": mode, "sumber": sumber, "employees": employees, **stats,
         }, _ip(request))
@@ -419,3 +421,4 @@ def package_confirm(
         upload=_out(up, user.full_name), inserted=stats["inserted"], overwritten=stats["overwritten"],
         skipped=stats["skipped"], sumber=sumber, employees=employees,
     )
+
