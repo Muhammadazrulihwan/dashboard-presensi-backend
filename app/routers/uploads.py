@@ -14,7 +14,7 @@ from app.deps import HR_ONLY, get_current_user
 from app.models import Attendance, Upload, UploadFile as UploadFileRow, UploadStatus, User
 from app.schemas import (
     ConfirmRequest, ConfirmResponse, PackageConfirmRequest, PackageConfirmResponse, PackagePreviewResponse,
-    PreviewResponse, SourceFileInfo, UploadOut,
+    PreviewResponse, SourceFileInfo, UploadFileOut, UploadOut,
 )
 from app.services import audit
 from app.services.archive import archive_upload
@@ -130,6 +130,7 @@ def preview(request: Request, file: UploadFile = File(...), db: Session = Depend
         clean = result.clean
         conflicts = find_conflicts(db, clean).height
         date_from, date_to, employees = clean["tanggal"].min(), clean["tanggal"].max(), clean["nik"].n_unique()
+        up.date_from, up.date_to = date_from, date_to
     audit.log(db, user.id, "upload_preview", {"upload_id": up.id, "filename": original, "errors": result.error_count}, _ip(request))
     db.commit()
     if result.error_count:
@@ -151,11 +152,35 @@ def preview(request: Request, file: UploadFile = File(...), db: Session = Depend
     )
 
 
-def _out(up: Upload, uploader: str) -> UploadOut:
+def _out(up: Upload, uploader: str, sumber: list[UploadFileOut] | None = None) -> UploadOut:
     created = up.created_at
     if created.tzinfo is None:  # SQLite menyimpan UTC tanpa zona waktu
         created = created.replace(tzinfo=timezone.utc)
-    return UploadOut(id=up.id, filename=up.filename, uploader=uploader, created_at=created, row_count=up.row_count, status=up.status.value)
+    return UploadOut(
+        id=up.id, filename=up.filename, uploader=uploader, created_at=created, row_count=up.row_count,
+        status=up.status.value, date_from=up.date_from, date_to=up.date_to, sumber=sumber or [],
+    )
+
+
+def _sumber_map(db: Session, upload_ids: list[int]) -> dict[int, list[UploadFileOut]]:
+    """Rincian file per sumber (jenis, baris, rentang, peringatan) untuk riwayat upload (PRD F16)."""
+    if not upload_ids:
+        return {}
+    rows = db.scalars(
+        select(UploadFileRow).where(UploadFileRow.upload_id.in_(upload_ids)).order_by(UploadFileRow.jenis_sumber)
+    ).all()
+    out: dict[int, list[UploadFileOut]] = {}
+    for r in rows:
+        v = r.validasi or {}
+        out.setdefault(r.upload_id, []).append(UploadFileOut(
+            jenis_sumber=r.jenis_sumber,
+            nama_file=r.nama_file,
+            row_count=r.row_count,
+            date_from=v.get("date_from"),
+            date_to=v.get("date_to"),
+            warnings=list(v.get("warnings") or []),
+        ))
+    return out
 
 
 @router.post("/{upload_id}/confirm", response_model=ConfirmResponse)
@@ -226,7 +251,8 @@ def history(
         .limit(limit)
         .offset(offset)
     ).all()
-    return [_out(up, name) for up, name in rows]
+    sumber = _sumber_map(db, [up.id for up, _ in rows])
+    return [_out(up, name, sumber.get(up.id)) for up, name in rows]
 
 
 @router.delete("/{upload_id}", response_model=UploadOut)
@@ -313,9 +339,6 @@ async def package_preview(
     up = Upload(filename=first_name, stored_path=str(first_path), uploaded_by=user.id, status=UploadStatus.pending)
     db.add(up)
     db.commit()
-    for kind, (path, name) in files.items():
-        db.add(UploadFileRow(upload_id=up.id, jenis_sumber=kind, nama_file=name, stored_path=str(path)))
-    db.commit()
 
     parsed, errors = _parse_package(files)
     infos = [
@@ -325,6 +348,23 @@ async def package_preview(
         )
         for kind, p in parsed.items()
     ]
+
+    # Simpan metadata per file (baris, rentang, peringatan) agar riwayat upload bisa menampilkan
+    # rincian per sumber tanpa membuka file lagi (PRD F16).
+    for kind, (path, name) in files.items():
+        p = parsed.get(kind)
+        db.add(UploadFileRow(
+            upload_id=up.id, jenis_sumber=kind, nama_file=name, stored_path=str(path),
+            row_count=p.row_count if p else None,
+            validasi={
+                "ok": p is not None,
+                "warnings": list(p.warnings) if p else [],
+                "mapped_columns": list(p.mapped_columns) if p else [],
+                "date_from": p.date_from.isoformat() if p and p.date_from else None,
+                "date_to": p.date_to.isoformat() if p and p.date_to else None,
+            },
+        ))
+    db.commit()
 
     can_save = not errors
     d1 = d2 = None
@@ -348,6 +388,7 @@ async def package_preview(
 
     up.status = UploadStatus.validated if can_save else UploadStatus.failed
     up.row_count = rekap_rows
+    up.date_from, up.date_to = d1, d2
     db.commit()
     audit.log(db, user.id, "package_preview", {
         "upload_id": up.id, "sumber": list(files), "rekap_rows": rekap_rows, "errors": len(errors),

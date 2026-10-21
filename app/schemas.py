@@ -25,6 +25,15 @@ class PreviewResponse(BaseModel):
     mapped_columns: list[str] = []
 
 
+class UploadFileOut(BaseModel):
+    jenis_sumber: str  # activity | report | timeoff | approval
+    nama_file: str
+    row_count: int | None = None
+    date_from: date | None = None
+    date_to: date | None = None
+    warnings: list[str] = []
+
+
 class UploadOut(BaseModel):
     id: int
     filename: str
@@ -32,6 +41,10 @@ class UploadOut(BaseModel):
     created_at: datetime
     row_count: int | None
     status: str
+    # PRD F16: periode data paket dan rincian per sumber.
+    date_from: date | None = None
+    date_to: date | None = None
+    sumber: list[UploadFileOut] = []
 
 
 class ConfirmRequest(BaseModel):

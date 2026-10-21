@@ -81,6 +81,9 @@ class Upload(Base):
     row_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[UploadStatus] = mapped_column(Enum(UploadStatus, native_enum=False, length=20), default=UploadStatus.pending)
     error_summary: Mapped[dict | None] = mapped_column(JsonType, nullable=True)
+    # Rentang tanggal data pada paket (PRD F16). Kosong untuk upload lama sebelum kolom ini ada.
+    date_from: Mapped[date | None] = mapped_column(Date, nullable=True)
+    date_to: Mapped[date | None] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

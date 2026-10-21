@@ -123,6 +123,28 @@ def test_package_parses_all_sources_and_merges(client):
     assert by[("LS019", "2026-09-01")]["status"] == "Hadir"
 
 
+def test_upload_history_shows_period_and_per_source(client):
+    """PRD F16: riwayat upload menampilkan periode data dan jumlah baris per sumber."""
+    body = upload_package(client, {
+        "activity": activity_xlsx(), "report": report_xlsx(),
+        "timeoff": timeoff_xlsx(), "approval": approval_xlsx(),
+    })
+    confirm_package(client, body["upload_id"])
+
+    history = client.get("/uploads", params={"status": "saved"}).json()
+    assert len(history) == 1
+    item = history[0]
+    # Periode data paket tersimpan pada baris upload
+    assert item["date_from"] == "2026-09-01" and item["date_to"] == "2026-09-05"
+    # Rincian per sumber: jenis, jumlah baris, rentang tanggal, peringatan
+    sumber = {s["jenis_sumber"]: s for s in item["sumber"]}
+    assert set(sumber) == {"activity", "report", "timeoff", "approval"}
+    assert sumber["activity"]["row_count"] == 7
+    assert sumber["report"]["row_count"] == 3
+    assert sumber["report"]["date_from"] == "2026-09-01" and sumber["report"]["date_to"] == "2026-09-03"
+    assert any("subtotal" in w for w in sumber["report"]["warnings"])
+
+
 def test_clock_out_hilang_and_timeoff(client):
     body = upload_package(client, {"activity": activity_xlsx(), "report": report_xlsx(), "timeoff": timeoff_xlsx()})
     confirm_package(client, body["upload_id"])
