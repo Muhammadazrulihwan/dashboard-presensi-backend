@@ -456,6 +456,17 @@ class TrashRequest(BaseModel):
     alasan: str = Field(min_length=1, max_length=500)
 
 
+class BulkDeleteRequest(BaseModel):
+    ids: list[int] = Field(min_length=1, max_length=200)
+    alasan: str | None = Field(None, max_length=500)
+
+
+class BulkDeleteResponse(BaseModel):
+    dihapus: int
+    tidak_ditemukan: list[int] = []
+    arsip_ke_tempat_sampah: int = 0
+
+
 # ========== Paket empat sumber (Rilis B) ==========
 
 class SourceFileInfo(BaseModel):

@@ -4,6 +4,7 @@ from datetime import datetime, time
 import polars as pl
 import xlsxwriter
 
+from app.db import SessionLocal
 from tests.conftest import as_dept
 
 # 2026-10-05 adalah hari Senin, 10-11 Minggu. Hitungan manual:
@@ -255,12 +256,91 @@ def test_xlsx_with_time_cells_and_numeric_nik(client):
 
 def test_delete_upload(client):
     body, _ = upload(client)
-    r = client.delete(f"/uploads/{body['upload_id']}")
+    r = client.request("DELETE", f"/uploads/{body['upload_id']}", json={"alasan": "salah unggah"})
     assert r.status_code == 200 and r.json()["status"] == "deleted"
     assert client.get("/dashboard/summary").json()["current"]["records"] == 0
     assert client.delete(f"/uploads/{body['upload_id']}").status_code == 404
     tabs = {s: len(client.get("/uploads", params={"status": s}).json()) for s in ["saved", "failed", "deleted"]}
     assert tabs == {"saved": 0, "failed": 0, "deleted": 1}
+
+
+def test_delete_upload_moves_file_to_archive_trash(client):
+    """PRD F24: menghapus upload tidak memusnahkan file; arsipnya masuk tempat sampah dan bisa dipulihkan."""
+    body, _ = upload(client)
+    fid = client.get("/archive").json()["items"][0]["id"]
+
+    r = client.request("DELETE", f"/uploads/{body['upload_id']}", json={"alasan": "salah unggah"})
+    assert r.status_code == 200
+
+    # Data presensi hilang dari dashboard
+    assert client.get("/dashboard/summary").json()["current"]["records"] == 0
+    # File asli tetap ada di arsip, statusnya tempat sampah, alasan tercatat
+    aktif = client.get("/archive").json()
+    assert aktif["total"] == 0
+    sampah = client.get("/archive", params={"status": "sampah"}).json()
+    assert sampah["total"] == 1
+    item = sampah["items"][0]
+    assert item["id"] == fid and item["alasan_hapus"] == "salah unggah"
+    # Masih bisa diunduh dan dipulihkan
+    assert client.get(f"/archive/{fid}/download").status_code == 200
+    assert client.post(f"/archive/{fid}/restore").json()["status"] == "aktif"
+
+
+def test_bulk_delete_uploads(client):
+    """PRD F24: hapus beberapa upload sekaligus; file asli semuanya masuk tempat sampah."""
+    def csv_for(nik: str, tanggal: str) -> str:
+        return HEADER + f"{nik},Nama {nik},{tanggal},IT,,08:00,17:00,Hadir,\n"
+
+    a, _ = upload(client, csv_for("101", "2026-10-05"), name="a.csv")
+    b, _ = upload(client, csv_for("102", "2026-10-05"), name="b.csv")
+    c, _ = upload(client, csv_for("103", "2026-10-05"), name="c.csv")
+    ids = [a["upload_id"], b["upload_id"]]
+    assert client.get("/dashboard/summary").json()["current"]["records"] == 3
+
+    r = client.post("/uploads/bulk-delete", json={"ids": ids, "alasan": "duplikat"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["dihapus"] == 2 and body["tidak_ditemukan"] == []
+    assert body["arsip_ke_tempat_sampah"] >= 2
+
+    # Dua terhapus dari dashboard, satu tersisa; file asli dua yang dihapus ada di tempat sampah
+    assert len(client.get("/uploads", params={"status": "saved"}).json()) == 1
+    assert len(client.get("/uploads", params={"status": "deleted"}).json()) == 2
+    assert client.get("/dashboard/summary").json()["current"]["records"] == 1
+    sampah = client.get("/archive", params={"status": "sampah"}).json()
+    assert sampah["total"] == 2
+    assert all(item["alasan_hapus"] == "duplikat" for item in sampah["items"])
+
+    # ID yang sudah terhapus / tidak ada dilaporkan, bukan error (masih ada satu file valid tersisa)
+    r2 = client.post("/uploads/bulk-delete", json={"ids": [a["upload_id"], 999999, c["upload_id"]]})
+    assert r2.status_code == 200
+    assert r2.json()["dihapus"] == 1
+    assert sorted(r2.json()["tidak_ditemukan"]) == sorted([a["upload_id"], 999999])
+
+    # Semua id tidak valid -> 404
+    assert client.post("/uploads/bulk-delete", json={"ids": [999999]}).status_code == 404
+
+
+def test_bulk_delete_requires_ids(client):
+    assert client.post("/uploads/bulk-delete", json={"ids": []}).status_code == 422
+
+
+def test_delete_upload_without_archive_still_keeps_file(client):
+    """Upload lama yang belum punya arsip: file disalin ke arsip dulu, bukan dihapus permanen."""
+    body, _ = upload(client)
+    # Simulasikan upload lama: hapus baris arsip yang dibuat saat upload
+    with SessionLocal() as db:
+        from app.models import ArchivedFile, ArchivedFileEmployee
+        db.query(ArchivedFileEmployee).delete()
+        db.query(ArchivedFile).delete()
+        db.commit()
+    assert client.get("/archive").json()["total"] == 0
+
+    r = client.delete(f"/uploads/{body['upload_id']}")
+    assert r.status_code == 200
+    sampah = client.get("/archive", params={"status": "sampah"}).json()
+    assert sampah["total"] == 1
+    assert sampah["items"][0]["checksum_terverifikasi"] is True
 
 
 def test_exports(client):
@@ -323,3 +403,4 @@ def test_arrival_vs_schedule_basic(client):
     upload(client)
     cur = client.get("/dashboard/summary", params=RANGE).json()["current"]
     assert cur["avg_selisih_masuk_menit"] == 7.0              # (-5 + 10 + 0 + 30 + 0) / 5
+

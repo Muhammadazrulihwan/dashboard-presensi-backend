@@ -11,12 +11,16 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db import get_db
 from app.deps import HR_ONLY, get_current_user
-from app.models import Attendance, Upload, UploadFile as UploadFileRow, UploadStatus, User
+from app.models import (
+    ArchiveStatus, ArchivedFile, Attendance, Upload, UploadFile as UploadFileRow, UploadStatus, User,
+)
 from app.schemas import (
-    ConfirmRequest, ConfirmResponse, PackageConfirmRequest, PackageConfirmResponse, PackagePreviewResponse,
-    PreviewResponse, SourceFileInfo, UploadFileOut, UploadOut,
+    BulkDeleteRequest, BulkDeleteResponse, ConfirmRequest, ConfirmResponse, PackageConfirmRequest,
+    PackageConfirmResponse, PackagePreviewResponse, PreviewResponse, SourceFileInfo, TrashRequest,
+    UploadFileOut, UploadOut,
 )
 from app.services import audit
+from app.services import archive as archive_svc
 from app.services.archive import archive_upload
 from app.services.calculator import compute
 from app.services.cleanup import discard_file
@@ -255,18 +259,79 @@ def history(
     return [_out(up, name, sumber.get(up.id)) for up, name in rows]
 
 
+def _delete_upload_rows(db: Session, ups: list[Upload], user_id: int, alasan: str) -> list[int]:
+    """Hapus data presensi beberapa upload sekaligus; file asli dijamin masuk tempat sampah arsip.
+
+    PRD F24: file asli tidak dimusnahkan. Bila sudah ada di arsip, arsipnya dipindah ke tempat sampah
+    (masih bisa dipulihkan). Bila belum (upload lama sebelum fitur arsip), file disalin ke arsip dulu.
+    Tidak commit; pemanggil yang commit dan mencatat audit.
+    """
+    archive_ids: list[int] = []
+    for up in ups:
+        archived = db.scalars(
+            select(ArchivedFile).where(ArchivedFile.upload_id == up.id, ArchivedFile.status == ArchiveStatus.aktif)
+        ).all()
+        if not archived and Path(up.stored_path).exists():
+            archive_upload(db, up, "presensi", periode_awal=up.date_from, periode_akhir=up.date_to)
+            db.flush()
+            archived = db.scalars(
+                select(ArchivedFile).where(ArchivedFile.upload_id == up.id, ArchivedFile.status == ArchiveStatus.aktif)
+            ).all()
+        for row in archived:
+            archive_svc.trash(db, row, user_id, alasan)
+            archive_ids.append(row.id)
+        db.execute(delete(Attendance).where(Attendance.upload_id == up.id))
+        up.status = UploadStatus.deleted
+    return archive_ids
+
+
 @router.delete("/{upload_id}", response_model=UploadOut)
-def delete_upload(upload_id: int, request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def delete_upload(
+    upload_id: int,
+    request: Request,
+    body: TrashRequest | None = Body(None),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Hapus satu paket upload dari dashboard. Data presensi dihapus, file asli masuk tempat sampah arsip."""
     up = db.get(Upload, upload_id)
     if up is None or up.status == UploadStatus.deleted:
         raise HTTPException(404, "Upload tidak ditemukan")
-    db.execute(delete(Attendance).where(Attendance.upload_id == up.id))
-    up.status = UploadStatus.deleted
-    discard_file(up.stored_path)
-    audit.log(db, user.id, "upload_delete", {"upload_id": up.id, "filename": up.filename}, _ip(request))
+    alasan = (body.alasan.strip() if body and body.alasan else "") or "Dihapus dari Riwayat Upload"
+
+    archive_ids = _delete_upload_rows(db, [up], user.id, alasan)
+    audit.log(db, user.id, "upload_delete", {
+        "upload_id": up.id, "filename": up.filename, "alasan": alasan,
+        "arsip_ke_tempat_sampah": archive_ids,
+    }, _ip(request))
     db.commit()
     uploader = db.get(User, up.uploaded_by)
     return _out(up, uploader.full_name if uploader else "-")
+
+
+@router.post("/bulk-delete", response_model=BulkDeleteResponse)
+def bulk_delete_uploads(
+    request: Request,
+    body: BulkDeleteRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Hapus beberapa paket upload sekaligus (PRD F24). File asli semua paket masuk tempat sampah arsip."""
+    ids = list(dict.fromkeys(body.ids))  # buang duplikat, jaga urutan
+    ups = list(db.scalars(select(Upload).where(Upload.id.in_(ids), Upload.status != UploadStatus.deleted)))
+    found = {u.id for u in ups}
+    tidak_ditemukan = [i for i in ids if i not in found]
+    if not ups:
+        raise HTTPException(404, "Tidak ada upload yang bisa dihapus")
+
+    alasan = (body.alasan or "").strip() or "Dihapus massal dari Riwayat Upload"
+    archive_ids = _delete_upload_rows(db, ups, user.id, alasan)
+    audit.log(db, user.id, "upload_bulk_delete", {
+        "upload_ids": [u.id for u in ups], "jumlah": len(ups), "alasan": alasan,
+        "tidak_ditemukan": tidak_ditemukan, "arsip_ke_tempat_sampah": archive_ids,
+    }, _ip(request))
+    db.commit()
+    return BulkDeleteResponse(dihapus=len(ups), tidak_ditemukan=tidak_ditemukan, arsip_ke_tempat_sampah=len(archive_ids))
 
 
 # ---------- Paket empat sumber (PRD F4-F9, Rilis B) ----------

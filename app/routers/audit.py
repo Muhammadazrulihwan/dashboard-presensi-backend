@@ -48,6 +48,7 @@ ACTION_LABELS = {
     "upload_preview": "Periksa File Presensi",
     "upload_confirm": "Simpan File Presensi",
     "upload_delete": "Hapus Upload Presensi",
+    "upload_bulk_delete": "Hapus Beberapa Upload Presensi",
     "package_preview": "Periksa Paket Empat Sumber",
     "package_confirm": "Simpan Paket Empat Sumber",
     # Kinerja penjualan (Sales/Marketing)
