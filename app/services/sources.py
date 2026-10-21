@@ -350,6 +350,16 @@ def _to_float(v) -> float | None:
     s = str(v).strip().replace(",", ".")
     if not s or s.lower() in ("none", "nan", "null"):
         return None
+    # Real/Actual Working Hour pada Report Attendance bisa berformat jam:menit (mis. "201:54").
+    # Ubah ke jam desimal: jam + menit/60.
+    if ":" in s:
+        jam, _, menit = s.partition(":")
+        try:
+            j = float(jam)
+            m = float(menit) if menit else 0.0
+            return round(j + m / 60, 2)
+        except ValueError:
+            return None
     try:
         return float(s)
     except ValueError:

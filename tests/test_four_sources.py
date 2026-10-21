@@ -145,6 +145,54 @@ def test_upload_history_shows_period_and_per_source(client):
     assert any("subtotal" in w for w in sumber["report"]["warnings"])
 
 
+def test_report_comparison_covers_all_fields(client):
+    """PRD F11: pembanding Report Attendance mencakup jam masuk, jam keluar, terlambat, pulang cepat, jam nyata."""
+    def report_mismatch() -> bytes:
+        def build(wb):
+            ws = wb.active
+            ws.title = "Export Attendance Report"
+            ws.append(["Employee ID", "Employee Name", "Date", "Shift Name", "Schedule In", "Schedule Out",
+                       "Check In", "Check Out", "Late In", "Early Out", "Actual Working Hour", "Real Working Hour",
+                       "Attendance Code", "Organization", "Branch"])
+            # Sistem akan menghitung masuk 08:20, keluar 17:05 dari Activity.
+            # Report sengaja berbeda di semua field agar kelima pembanding muncul.
+            ws.append(["LS019", "Kamaludin", "2026-09-01", "LSP-1", "08:30", "16:30", "08:45", "16:50",
+                       "20", "15", "7:00", "9:30", "H", "IT", "PT Lenko - Pusat"])
+        return _wb_bytes(build)
+
+    body = upload_package(client, {"activity": activity_xlsx(), "report": report_mismatch()})
+    confirm_package(client, body["upload_id"])
+    with SessionLocal() as db:
+        row = db.scalar(select(Attendance).where(Attendance.nik == "LS019", Attendance.tanggal == "2026-09-01"))
+        s = row.selisih_report or ""
+        assert "jam masuk sistem 08:20 vs report 08:45" in s
+        assert "jam keluar sistem 17:05 vs report 16:50" in s
+        assert "terlambat sistem" in s and "report 20 mnt" in s
+        assert "pulang cepat sistem" in s and "report 15 mnt" in s
+        assert "jam nyata sistem" in s
+
+
+def test_report_match_has_no_difference(client):
+    """Bila hasil sistem sama dengan Report, tidak ada tanda selisih."""
+    def report_same() -> bytes:
+        def build(wb):
+            ws = wb.active
+            ws.title = "Export Attendance Report"
+            ws.append(["Employee ID", "Employee Name", "Date", "Shift Name", "Schedule In", "Schedule Out",
+                       "Check In", "Check Out", "Late In", "Early Out", "Actual Working Hour", "Real Working Hour",
+                       "Attendance Code", "Organization", "Branch"])
+            # Activity LS019 09-01: masuk 08:20 keluar 17:05, jadwal LSP-1 08:30-16:30 -> terlambat 0, pulang cepat 0
+            ws.append(["LS019", "Kamaludin", "2026-09-01", "LSP-1", "08:30", "16:30", "08:20", "17:05",
+                       "0", "0", "7:00", "8.75", "H", "IT", "PT Lenko - Pusat"])
+        return _wb_bytes(build)
+
+    body = upload_package(client, {"activity": activity_xlsx(), "report": report_same()})
+    confirm_package(client, body["upload_id"])
+    with SessionLocal() as db:
+        row = db.scalar(select(Attendance).where(Attendance.nik == "LS019", Attendance.tanggal == "2026-09-01"))
+        assert row.selisih_report is None
+
+
 def test_clock_out_hilang_and_timeoff(client):
     body = upload_package(client, {"activity": activity_xlsx(), "report": report_xlsx(), "timeoff": timeoff_xlsx()})
     confirm_package(client, body["upload_id"])

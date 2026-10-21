@@ -20,6 +20,39 @@ STATUS_BY_POLICY = {"S": "Sakit", "SAKIT": "Sakit", "C": "Cuti", "CUTI": "Cuti",
 PRESENT = ("Hadir", "Dinas Luar")
 
 
+def _hhmm(m: int | None) -> str:
+    if m is None:
+        return "-"
+    return f"{(int(m) // 60) % 24:02d}:{int(m) % 60:02d}"
+
+
+def _report_diffs(rep: dict, *, jam_masuk, jam_keluar, menit_terlambat, menit_pulang_cepat,
+                  jam_kerja_nyata) -> list[str]:
+    """Selisih hasil sistem terhadap Report Attendance (PRD F11).
+
+    Report dipakai sebagai pembanding, tidak menimpa hasil sistem. Tiap field yang berbeda dicatat
+    sebagai satu kalimat agar HR bisa meninjau tanpa membuka file asli.
+    """
+    bagian: list[str] = []
+    rep_masuk = rep.get("check_in_menit")
+    if rep_masuk is not None and jam_masuk is not None and rep_masuk != jam_masuk:
+        bagian.append(f"jam masuk sistem {_hhmm(jam_masuk)} vs report {_hhmm(rep_masuk)}")
+
+    rep_keluar = rep.get("check_out_menit")
+    if rep_keluar is not None and jam_keluar is not None and rep_keluar != jam_keluar:
+        bagian.append(f"jam keluar sistem {_hhmm(jam_keluar)} vs report {_hhmm(rep_keluar)}")
+
+    if rep.get("late_in_menit") is not None and rep["late_in_menit"] != menit_terlambat:
+        bagian.append(f"terlambat sistem {menit_terlambat} mnt vs report {rep['late_in_menit']} mnt")
+
+    if rep.get("early_out_menit") is not None and rep["early_out_menit"] != menit_pulang_cepat:
+        bagian.append(f"pulang cepat sistem {menit_pulang_cepat} mnt vs report {rep['early_out_menit']} mnt")
+
+    if rep.get("real_hour") is not None and jam_kerja_nyata is not None and abs(rep["real_hour"] - jam_kerja_nyata) >= 0.1:
+        bagian.append(f"jam nyata sistem {jam_kerja_nyata} vs report {rep['real_hour']}")
+    return bagian
+
+
 def _is_approved(status: str | None) -> bool:
     return (status or "").strip().lower() in ("approved", "approve", "disetujui", "accepted")
 
@@ -189,11 +222,10 @@ def merge(
         # ---- Pembanding Report Attendance (tidak menimpa) ----
         selisih = None
         if rep:
-            bagian = []
-            if rep.get("late_in_menit") is not None and rep["late_in_menit"] != menit_terlambat:
-                bagian.append(f"terlambat sistem {menit_terlambat} mnt vs report {rep['late_in_menit']} mnt")
-            if rep.get("real_hour") is not None and jam_kerja_nyata is not None and abs(rep["real_hour"] - jam_kerja_nyata) >= 0.1:
-                bagian.append(f"jam nyata sistem {jam_kerja_nyata} vs report {rep['real_hour']}")
+            bagian = _report_diffs(
+                rep, jam_masuk=jam_masuk, jam_keluar=jam_keluar, menit_terlambat=menit_terlambat,
+                menit_pulang_cepat=menit_pulang_cepat, jam_kerja_nyata=jam_kerja_nyata,
+            )
             if bagian:
                 selisih = "; ".join(bagian)
 
