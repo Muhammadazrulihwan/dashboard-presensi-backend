@@ -63,3 +63,31 @@ def test_scope_names_are_case_insensitive_and_configurable(client, monkeypatch):
     as_dept("Sales/Marketing")
     monkeypatch.setattr(settings, "sales_org_names", " SALES ")
     assert niks(client) == {"S01"}
+
+
+# ---------- Kinerja Karyawan (PRD F26) ----------
+
+def test_performance_ranking_scope_and_access(client):
+    """F26: peringkat kinerja per karyawan untuk HR, Audit, Sales/Marketing; IT 403."""
+    from tests.test_presensi import upload
+
+    upload(client)
+    r = client.get("/dashboard/performance", params={"from": "2026-10-05", "to": "2026-10-09"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert {x["nik"] for x in body} == {"001", "002"}
+    ani = next(x for x in body if x["nik"] == "001")
+    # Ani: hadir 3 hari, terlambat 1 -> tepat waktu 66.7%
+    assert ani["kehadiran_pct"] == 60.0 and ani["tepat_waktu_pct"] == 66.7
+    assert ani["terlambat"] == 1 and ani["menit_terlambat"] == 10
+    assert ani["jam_kerja"] == 26.92 and ani["menit_lembur"] == 10
+
+    # Urut kehadiran menurun secara default; bisa dibalik.
+    asc = client.get("/dashboard/performance", params={"from": "2026-10-05", "to": "2026-10-09", "order": "asc"}).json()
+    assert asc[0]["kehadiran_pct"] <= asc[-1]["kehadiran_pct"]
+
+    as_dept("IT")
+    assert client.get("/dashboard/performance", params={"from": "2026-10-05", "to": "2026-10-09"}).status_code == 403
+    for dept in ("HR", "Audit", "Sales/Marketing"):
+        as_dept(dept)
+        assert client.get("/dashboard/performance", params={"from": "2026-10-05", "to": "2026-10-09"}).status_code == 200

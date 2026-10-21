@@ -46,10 +46,11 @@ def test_completeness_counts(client):
     assert body["cakupan_bulan"] == [{"periode": "2026-10", "karyawan": 2, "baris": 6, "hari_kerja": 6}]
 
     sumber = {s["kode"]: s for s in body["sumber"]}
+    # Data diunggah lewat template satu file, jadi hanya "presensi" yang tersedia.
+    # Keempat sumber paket ditandai "belum" (F12: deteksi sumber belum masuk yang sebenarnya).
     assert sumber["presensi"]["status"] == "tersedia"
-    # Rilis B sudah tersedia: keempat sumber kini berstatus tersedia.
     for kode in ("activity", "report", "timeoff", "approval"):
-        assert sumber[kode]["status"] == "tersedia"
+        assert sumber[kode]["status"] == "belum", kode
     # Indikator baru ada di respons (kosong pada data template lama).
     assert body["selisih_report"] == [] and body["koreksi_setelah_tutup"] == []
     assert body["ringkasan"]["baris_selisih_report"] == 0

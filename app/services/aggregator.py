@@ -313,3 +313,61 @@ def payroll_rows(db: Session, f: Filters) -> list[dict]:
         r["gaji_prorata_persen"] = round(r["hari_dibayar"] * 100 / pembagi, 2) if pembagi else None
         out.append(r)
     return out
+
+
+def performance_ranking(db: Session, f: Filters, sort: str, order: str) -> list[dict]:
+    """Peringkat kinerja per karyawan (PRD F26).
+
+    Indikator per karyawan: tingkat kehadiran, ketepatan waktu (hadir tanpa terlambat),
+    jam kerja, lembur, izin/sakit/cuti, alpa, dan koreksi. Dipakai halaman Kinerja Karyawan
+    untuk HR, Audit, dan Sales/Marketing (bukan IT). Angka mengikuti definisi dashboard.
+    """
+    rows = recap(db, replace(f, status=None), "karyawan")
+    out = []
+    for r in rows:
+        hadir_base = r["hadir"] - r["dinas_luar"]  # hanya Hadir yang dinilai ketepatan waktunya
+        tepat_waktu_pct = round((hadir_base - r["terlambat"]) * 100 / hadir_base, 1) if hadir_base > 0 else None
+        out.append({
+            "nik": r["nik"],
+            "nama": r["nama"],
+            "departemen": r["departemen"],
+            "hari_kerja": r["hari_kerja"],
+            "hadir": r["hadir"],
+            "dinas_luar": r["dinas_luar"],
+            "kehadiran_pct": r["kehadiran_pct"],
+            "terlambat": r["terlambat"],
+            "menit_terlambat": r["menit_terlambat"],
+            "tepat_waktu_pct": tepat_waktu_pct,
+            "izin": r["izin"],
+            "sakit": r["sakit"],
+            "cuti": r["cuti"],
+            "alpa": r["alpa"],
+            "pulang_cepat": r["pulang_cepat"],
+            "jam_kerja": r["jam_kerja"],
+            "menit_lembur": r["menit_lembur"],
+            "dikoreksi": r["dikoreksi"],
+        })
+
+    # Kolom pengurutan yang diizinkan. Nilai None selalu di bawah.
+    keys = {
+        "nama": lambda x: x["nama"],
+        "departemen": lambda x: x["departemen"],
+        "kehadiran_pct": lambda x: x["kehadiran_pct"],
+        "tepat_waktu_pct": lambda x: x["tepat_waktu_pct"],
+        "terlambat": lambda x: x["terlambat"],
+        "menit_terlambat": lambda x: x["menit_terlambat"],
+        "alpa": lambda x: x["alpa"],
+        "jam_kerja": lambda x: x["jam_kerja"],
+        "menit_lembur": lambda x: x["menit_lembur"],
+    }
+    key = keys.get(sort, keys["kehadiran_pct"])
+
+    def sort_key(x):
+        v = key(x)
+        # Angka None (mis. kehadiran tanpa hari kerja) ditaruh paling bawah pada urutan menurun.
+        if v is None:
+            return (1, 0)
+        return (0, v) if not isinstance(v, str) else (0, v)
+
+    out.sort(key=sort_key, reverse=(order == "desc"))
+    return out

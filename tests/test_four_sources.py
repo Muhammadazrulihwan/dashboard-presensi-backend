@@ -245,3 +245,23 @@ def test_employee_detail_exposes_correction_and_real_hours(client):
     cor = next(r for r in d2["range"] if r["tanggal"] == "2026-09-05")
     assert cor["dikoreksi"] is True and cor["koreksi_approver"] == "LS007 Hikmat"
 
+
+
+def test_completeness_marks_sources_present_after_package(client):
+    """F12: status sumber di Kelengkapan Data dihitung dari data yang benar-benar masuk.
+
+    Sebelum paket diunggah keempat sumber "belum"; setelah paket berisi keempatnya, semua "tersedia".
+    """
+    kosong = client.get("/dashboard/completeness", params={"from": "2026-09-01", "to": "2026-09-05"}).json()
+    assert {s["kode"]: s["status"] for s in kosong["sumber"]}["activity"] == "belum"
+
+    body = upload_package(client, {
+        "activity": activity_xlsx(), "report": report_xlsx(),
+        "timeoff": timeoff_xlsx(), "approval": approval_xlsx(),
+    })
+    confirm_package(client, body["upload_id"])
+
+    c = client.get("/dashboard/completeness", params={"from": "2026-09-01", "to": "2026-09-05"}).json()
+    status = {s["kode"]: s["status"] for s in c["sumber"]}
+    for kode in ("activity", "report", "timeoff", "approval", "presensi"):
+        assert status[kode] == "tersedia", (kode, status)

@@ -503,3 +503,26 @@ class PeriodReopenRequest(BaseModel):
     tahun: int = Field(ge=2000, le=2100)
     bulan: int = Field(ge=1, le=12)
     alasan: str = Field(min_length=1, max_length=500)
+
+
+# ========== Kinerja Karyawan (PRD F26) ==========
+
+class PerformanceRow(BaseModel):
+    nik: str
+    nama: str
+    departemen: str
+    hari_kerja: int
+    hadir: int
+    dinas_luar: int
+    kehadiran_pct: float | None
+    terlambat: int
+    menit_terlambat: int
+    tepat_waktu_pct: float | None
+    izin: int
+    sakit: int
+    cuti: int
+    alpa: int
+    pulang_cepat: int
+    jam_kerja: float
+    menit_lembur: int
+    dikoreksi: int

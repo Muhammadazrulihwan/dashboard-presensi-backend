@@ -7,7 +7,8 @@ from app.db import get_db
 from app.deps import DASHBOARD, HR_ONLY, PERFORMANCE, data_scope, get_current_user, scoped_filters
 from app.models import Department, User
 from app.schemas import (
-    CompletenessResponse, DeptRow, EmployeeDetail, MetaOut, RecordsPage, StatusCount, SummaryResponse, TopEmployee, TrendPoint,
+    CompletenessResponse, DeptRow, EmployeeDetail, MetaOut, PerformanceRow, RecordsPage, StatusCount, SummaryResponse,
+    TopEmployee, TrendPoint,
 )
 from app.services import aggregator as agg
 from app.services import completeness as comp
@@ -89,6 +90,20 @@ def get_employee_detail(nik: str, f: agg.Filters = Depends(scoped_filters), db: 
     if detail is None:
         raise HTTPException(404, "Karyawan tidak ditemukan pada rentang filter ini")
     return detail
+
+
+@router.get("/performance", response_model=list[PerformanceRow], dependencies=[detail_roles])
+def get_performance(
+    sort: Literal[
+        "nama", "departemen", "kehadiran_pct", "tepat_waktu_pct", "terlambat",
+        "menit_terlambat", "alpa", "jam_kerja", "menit_lembur",
+    ] = "kehadiran_pct",
+    order: Literal["asc", "desc"] = "desc",
+    f: agg.Filters = Depends(scoped_filters),
+    db: Session = Depends(get_db),
+):
+    """Peringkat kinerja per karyawan (PRD F26): HR, Audit, Sales/Marketing. IT tidak melihat."""
+    return agg.performance_ranking(db, f, sort, order)
 
 
 @router.get("/completeness", response_model=CompletenessResponse, dependencies=[HR_ONLY])

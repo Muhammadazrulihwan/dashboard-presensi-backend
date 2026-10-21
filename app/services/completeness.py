@@ -12,26 +12,68 @@ Indikator yang dihitung dari Rekap Absensi terpadu:
 """
 from dataclasses import replace
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import Attendance as A
+from app.models import (
+    Attendance as A,
+    AttendanceCorrection,
+    RawActivity,
+    RawReport,
+    TimeOffRequest,
+)
 from app.services.aggregator import Filters, _where, recap, workdays_between
 from app.services.rules import min_to_hhmm
 
 # Empat sumber PRD bagian 3 ditambah sumber template yang masih diterima.
+# Status "tersedia"/"belum" dihitung dari data yang benar-benar masuk pada rentang filter
+# (lihat _sumber_status), bukan lagi daftar statis.
 SUMBER = [
-    {"kode": "activity", "nama": "Activity", "status": "tersedia",
-     "catatan": "Diunggah lewat Paket Empat Sumber; sumber jam masuk dan pulang mentah."},
-    {"kode": "report", "nama": "Report Attendance", "status": "tersedia",
+    {"kode": "activity", "nama": "Activity",
+     "catatan": "Jam masuk dan pulang mentah; clock in paling awal dan clock out paling akhir."},
+    {"kode": "report", "nama": "Report Attendance",
      "catatan": "Jadwal shift dan pembanding; selisih ditandai, tidak menimpa hasil sistem."},
-    {"kode": "timeoff", "nama": "Time Off", "status": "tersedia",
+    {"kode": "timeoff", "nama": "Time Off",
      "catatan": "Izin, cuti, sakit yang disetujui menentukan status hari."},
-    {"kode": "approval", "nama": "Approval", "status": "tersedia",
+    {"kode": "approval", "nama": "Approval",
      "catatan": "Koreksi absen disetujui menimpa jam clock in/out pada tanggal efektif."},
-    {"kode": "presensi", "nama": "Presensi (file template)", "status": "tersedia",
+    {"kode": "presensi", "nama": "Presensi (file template)",
      "catatan": "Sumber tunggal lama; tetap didukung untuk upload satu file."},
 ]
+
+
+def _count_rows(db: Session, model, conds) -> int:
+    return db.scalar(select(func.count()).select_from(model).where(*conds)) or 0
+
+
+def _sumber_status(db: Session, d1, d2) -> list[dict]:
+    """Tandai tiap sumber 'tersedia' bila ada data pada rentang, 'belum' bila tidak.
+
+    Rentang tanggal per sumber memakai kolom tanggal efektifnya masing-masing. Time Off
+    memakai tumpang tindih (mulai..selesai) karena satu pengajuan bisa melintasi batas rentang.
+    """
+    ada = {
+        "activity": _count_rows(db, RawActivity, [RawActivity.tanggal >= d1, RawActivity.tanggal <= d2]),
+        "report": _count_rows(db, RawReport, [RawReport.tanggal >= d1, RawReport.tanggal <= d2]),
+        "timeoff": _count_rows(db, TimeOffRequest, [
+            TimeOffRequest.tanggal_mulai <= d2,
+            or_(TimeOffRequest.tanggal_selesai >= d1, TimeOffRequest.tanggal_selesai.is_(None)),
+        ]),
+        "approval": _count_rows(db, AttendanceCorrection, [
+            AttendanceCorrection.tanggal_efektif >= d1, AttendanceCorrection.tanggal_efektif <= d2,
+        ]),
+        "presensi": _count_rows(db, A, [A.tanggal >= d1, A.tanggal <= d2]),
+    }
+    out = []
+    for s in SUMBER:
+        n = ada[s["kode"]]
+        out.append({
+            **s,
+            "status": "tersedia" if n > 0 else "belum",
+            "catatan": s["catatan"] if n > 0 else f"Belum ada data {s['nama']} untuk rentang ini. Unggah lewat Upload Paket 4 Sumber.",
+        })
+    return out
+
 
 
 def _range(db: Session, f: Filters) -> tuple:
@@ -107,7 +149,11 @@ def completeness(db: Session, f: Filters) -> dict:
             "selisih_report": [],
             "koreksi_setelah_tutup": [],
             "cakupan_bulan": [],
-            "sumber": SUMBER,
+            "sumber": [
+                {**s, "status": "belum",
+                 "catatan": f"Belum ada data {s['nama']} untuk rentang ini."}
+                for s in SUMBER
+            ],
         }
 
     f = replace(f, date_from=d1, date_to=d2, status=None)
@@ -163,5 +209,5 @@ def completeness(db: Session, f: Filters) -> dict:
             {"periode": r.periode, "karyawan": int(r.karyawan), "baris": int(r.baris), "hari_kerja": int(r.hari_kerja)}
             for r in coverage
         ],
-        "sumber": SUMBER,
+        "sumber": _sumber_status(db, d1, d2),
     }
