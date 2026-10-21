@@ -6,8 +6,9 @@ Persetujuan Penilaian oleh akun Sales/Marketing yang ditandai penyetuju.
 """
 import calendar
 import uuid
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
 from sqlalchemy import and_, delete, func, or_, select
@@ -614,43 +615,130 @@ def get_salesman_performance(
     return result
 
 
+# ---------- Agregasi periode: bulan, kuartal, tahun (PRD F31/F35) ----------
+
+def _periods_for(periode: str, granularitas: str) -> list[str]:
+    """Daftar bulan "YYYY-MM" yang dicakup satu periode sesuai granularitas.
+
+    - bulan: satu bulan, mis. "2026-09"
+    - kuartal: "2026-Q3" -> Juli, Agustus, September
+    - tahun: "2026" -> Januari sampai Desember
+    """
+    g = (granularitas or "bulan").lower()
+    if g == "tahun":
+        tahun = int(periode)
+        return [f"{tahun:04d}-{b:02d}" for b in range(1, 13)]
+    if g == "kuartal":
+        tahun_s, q_s = periode.upper().replace("Q", "").split("-")
+        tahun, kuartal = int(tahun_s), int(q_s)
+        awal = (kuartal - 1) * 3 + 1
+        return [f"{tahun:04d}-{b:02d}" for b in range(awal, awal + 3)]
+    return [periode]
+
+
+def _validate_period(periode: str, granularitas: str) -> None:
+    g = (granularitas or "bulan").lower()
+    if g == "tahun":
+        if not (len(periode) == 4 and periode.isdigit()):
+            raise HTTPException(422, "Periode tahun harus format YYYY, contoh 2026")
+    elif g == "kuartal":
+        p = periode.upper()
+        if not (len(p) == 7 and p[4] == "-" and p[5] == "Q" and p[6] in "1234" and p[:4].isdigit()):
+            raise HTTPException(422, "Periode kuartal harus format YYYY-Q1 sampai YYYY-Q4, contoh 2026-Q3")
+    else:
+        if not (len(periode) == 7 and periode[4] == "-"):
+            raise HTTPException(422, "Periode bulan harus format YYYY-MM, contoh 2026-09")
+
+
+def _remaining_workdays(months: list[str]) -> int | None:
+    """Sisa hari kerja (Senin-Sabtu) dari hari ini sampai akhir periode, atau None bila periode sudah lewat.
+
+    Dipakai untuk kebutuhan penjualan per hari kerja (PRD F35). Hari libur tidak dikurangkan karena
+    endpoint ini tidak memuat daftar hari libur; angka bersifat indikatif untuk pantauan.
+    """
+    today = date.today()
+    akhir_tahun, akhir_bulan = int(months[-1][:4]), int(months[-1][5:7])
+    akhir = date(akhir_tahun, akhir_bulan, calendar.monthrange(akhir_tahun, akhir_bulan)[1])
+    if today > akhir:
+        return None
+    n, d = 0, today
+    while d <= akhir:
+        if d.isoweekday() <= 6:  # Senin sampai Sabtu
+            n += 1
+        d += timedelta(days=1)
+    return n
+
+
 @router.get("/cabang", response_model=list[CabangPerformance], dependencies=[PERFORMANCE])
 def get_cabang_performance(
     periode: str,
-    db: Session = Depends(get_db)
+    granularitas: Literal["bulan", "kuartal", "tahun"] = "bulan",
+    db: Session = Depends(get_db),
 ):
-    """Dashboard per cabang dengan pantauan capaian (PRD F35)"""
-    # Ambil semua cabang yang ada penjualan
+    """Dashboard per cabang dengan pantauan capaian (PRD F35).
+
+    Mendukung agregasi bulan, kuartal, dan tahun. Penjualan dan target dijumlahkan dari bulan-bulan
+    yang tercakup; capaian = total penjualan / total target pada periode itu.
+    """
+    _validate_period(periode, granularitas)
+    months = _periods_for(periode, granularitas)
+
     cabangs = db.scalars(
-        select(SalesPerformance.cabang).where(
-            SalesPerformance.periode == periode
-        ).distinct()
+        select(SalesPerformance.cabang).where(SalesPerformance.periode.in_(months)).distinct()
     ).all()
-    
+
+    # Agregasi penjualan per cabang dalam satu query (bukan per cabang) agar tidak N+1.
+    penjualan_map = {
+        c: float(t or 0)
+        for c, t in db.execute(
+            select(SalesPerformance.cabang, func.sum(SalesPerformance.penjualan))
+            .where(SalesPerformance.periode.in_(months)).group_by(SalesPerformance.cabang)
+        ).all()
+    }
+    jumlah_map = {
+        c: int(n or 0)
+        for c, n in db.execute(
+            select(SalesPerformance.cabang, func.count(SalesPerformance.id))
+            .where(SalesPerformance.periode.in_(months)).group_by(SalesPerformance.cabang)
+        ).all()
+    }
+    target_map = {
+        c: float(t or 0)
+        for c, t in db.execute(
+            select(SalesTarget.cabang, func.sum(SalesTarget.target))
+            .where(
+                SalesTarget.level == TargetLevel.CABANG,
+                SalesTarget.periode.in_(months),
+                SalesTarget.cabang.is_not(None),
+            ).group_by(SalesTarget.cabang)
+        ).all()
+    }
+
+    # Rekomendasi kelayakan per salesman pada bulan terakhir periode (status terkini).
+    bulan_akhir = months[-1]
+    rec_map = {
+        e: r
+        for e, r in db.execute(
+            select(SalesAssessment.employee_id, SalesAssessment.recommendation)
+            .where(SalesAssessment.periode == bulan_akhir)
+        ).all()
+    }
+    emp_map: dict[str, list[str]] = {}
+    for cabang, eid, nama in db.execute(
+        select(SalesPerformance.cabang, SalesPerformance.employee_id, SalesPerformance.nama)
+        .where(SalesPerformance.periode == bulan_akhir)
+        .order_by(SalesPerformance.nama)
+    ).all():
+        emp_map.setdefault(cabang, []).append(eid)
+
+    sisa_hari = _remaining_workdays(months)
     result = []
     for cabang in cabangs:
-        # Total penjualan cabang
-        total_penjualan = db.scalar(
-            select(func.sum(SalesPerformance.penjualan)).where(
-                SalesPerformance.cabang == cabang,
-                SalesPerformance.periode == periode
-            )
-        ) or 0
-        
-        # Target cabang
-        target_row = db.scalar(
-            select(SalesTarget).where(
-                SalesTarget.level == TargetLevel.CABANG,
-                SalesTarget.cabang == cabang,
-                SalesTarget.periode == periode
-            )
-        )
-        
-        target_value = target_row.target if target_row else None
+        total_penjualan = penjualan_map.get(cabang, 0.0)
+        target_value = target_map.get(cabang)
         capaian_pct = (total_penjualan / target_value * 100) if target_value and target_value > 0 else None
-        sisa_target = max(0, (target_value or 0) - total_penjualan)
-        
-        # Status berdasarkan capaian
+        sisa_target = max(0.0, (target_value or 0) - total_penjualan)
+
         if capaian_pct is None:
             status = "Target belum ada"
         elif capaian_pct >= 100:
@@ -659,136 +747,109 @@ def get_cabang_performance(
             status = "Perlu dikejar"
         else:
             status = "Jauh dari target"
-        
-        # Jumlah salesman
-        jumlah_salesman = db.scalar(
-            select(func.count(SalesPerformance.id)).where(
-                SalesPerformance.cabang == cabang,
-                SalesPerformance.periode == periode
-            )
-        ) or 0
-        
-        # Salesman layak vs tidak layak
-        salesman_layak = db.scalar(
-            select(func.count(SalesAssessment.id)).where(
-                SalesAssessment.periode == periode,
-                SalesAssessment.recommendation == EligibilityRecommendation.ELIGIBLE,
-                SalesAssessment.employee_id.in_(
-                    select(SalesPerformance.employee_id).where(
-                        SalesPerformance.cabang == cabang,
-                        SalesPerformance.periode == periode
-                    )
-                )
-            )
-        ) or 0
-        
-        salesman_tidak_layak = db.scalar(
-            select(func.count(SalesAssessment.id)).where(
-                SalesAssessment.periode == periode,
-                SalesAssessment.recommendation == EligibilityRecommendation.NOT_ELIGIBLE,
-                SalesAssessment.employee_id.in_(
-                    select(SalesPerformance.employee_id).where(
-                        SalesPerformance.cabang == cabang,
-                        SalesPerformance.periode == periode
-                    )
-                )
-            )
-        ) or 0
-        
+
+        ids = emp_map.get(cabang, [])
+        belum = [eid for eid in ids if rec_map.get(eid) == EligibilityRecommendation.NOT_ELIGIBLE]
+        # Nama salesman belum layak (PRD F35).
+        nama_map = {
+            eid: nama
+            for eid, nama in db.execute(
+                select(SalesPerformance.employee_id, SalesPerformance.nama)
+                .where(SalesPerformance.periode == bulan_akhir, SalesPerformance.employee_id.in_(belum or ["-"]))
+            ).all()
+        }
+        belum_nama = [nama_map[e] for e in belum if e in nama_map]
+
         result.append(CabangPerformance(
             cabang=cabang,
             periode=periode,
+            granularitas=granularitas,
             total_penjualan=total_penjualan,
             target_cabang=target_value,
             capaian_pct=capaian_pct,
             sisa_target=sisa_target,
-            jumlah_salesman=jumlah_salesman,
-            salesman_layak=salesman_layak,
-            salesman_tidak_layak=salesman_tidak_layak,
-            peringkat=None,  # Will be calculated after sorting
-            status=status
+            jumlah_salesman=jumlah_map.get(cabang, 0),
+            salesman_layak=sum(1 for e in ids if rec_map.get(e) == EligibilityRecommendation.ELIGIBLE),
+            salesman_tidak_layak=len(belum),
+            peringkat=None,
+            status=status,
+            salesman_belum_layak=belum_nama,
+            sisa_hari_kerja=sisa_hari,
+            kebutuhan_per_hari_kerja=(round(sisa_target / sisa_hari, 2) if sisa_hari and sisa_target > 0 else None),
         ))
-    
+
     # Peringkat antar cabang berdasar capaian terhadap target sendiri (PRD F35), bukan volume penjualan.
-    # Cabang tanpa target di urutan bawah; capaian yang sama diurutkan dari penjualan terbesar.
-    result.sort(
-        key=lambda x: (x.capaian_pct is not None, x.capaian_pct or 0, x.total_penjualan),
-        reverse=True,
-    )
+    result.sort(key=lambda x: (x.capaian_pct is not None, x.capaian_pct or 0, x.total_penjualan), reverse=True)
     for idx, item in enumerate(result, start=1):
         item.peringkat = idx
-    
     return result
 
 
 @router.get("/perusahaan", response_model=PerusahaanPerformance, dependencies=[PERFORMANCE])
 def get_perusahaan_performance(
     periode: str,
-    db: Session = Depends(get_db)
+    granularitas: Literal["bulan", "kuartal", "tahun"] = "bulan",
+    db: Session = Depends(get_db),
 ):
-    """Dashboard perusahaan total (PRD F31)"""
-    # Total penjualan seluruh perusahaan
+    """Dashboard perusahaan total (PRD F31). Mendukung agregasi bulan, kuartal, dan tahun."""
+    _validate_period(periode, granularitas)
+    months = _periods_for(periode, granularitas)
+
     total_penjualan = db.scalar(
-        select(func.sum(SalesPerformance.penjualan)).where(
-            SalesPerformance.periode == periode
-        )
+        select(func.sum(SalesPerformance.penjualan)).where(SalesPerformance.periode.in_(months))
     ) or 0
-    
-    # Target perusahaan
-    target_row = db.scalar(
-        select(SalesTarget).where(
+
+    target_value = db.scalar(
+        select(func.sum(SalesTarget.target)).where(
             SalesTarget.level == TargetLevel.PERUSAHAAN,
-            SalesTarget.periode == periode
+            SalesTarget.periode.in_(months),
         )
     )
-    
-    target_value = target_row.target if target_row else None
+    target_value = float(target_value) if target_value else None
     capaian_pct = (total_penjualan / target_value * 100) if target_value and target_value > 0 else None
-    sisa_target = max(0, (target_value or 0) - total_penjualan)
-    
-    # Jumlah cabang
-    jumlah_cabang = db.scalar(
-        select(func.count(func.distinct(SalesPerformance.cabang))).where(
-            SalesPerformance.periode == periode
-        )
-    ) or 0
-    
-    # Cabang yang tercapai (capaian >= 100%)
-    # Hitung per cabang
-    cabang_tercapai = 0
-    cabangs = db.scalars(
-        select(SalesPerformance.cabang).where(
-            SalesPerformance.periode == periode
-        ).distinct()
-    ).all()
-    
-    for cabang in cabangs:
-        total_cabang = db.scalar(
-            select(func.sum(SalesPerformance.penjualan)).where(
-                SalesPerformance.cabang == cabang,
-                SalesPerformance.periode == periode
-            )
-        ) or 0
-        
-        target_cabang = db.scalar(
-            select(SalesTarget.target).where(
+    sisa_target = max(0.0, (target_value or 0) - total_penjualan)
+
+    # Agregasi penjualan dan target per cabang dalam satu query.
+    penjualan_map = {
+        c: float(t or 0)
+        for c, t in db.execute(
+            select(SalesPerformance.cabang, func.sum(SalesPerformance.penjualan))
+            .where(SalesPerformance.periode.in_(months)).group_by(SalesPerformance.cabang)
+        ).all()
+    }
+    target_map = {
+        c: float(t or 0)
+        for c, t in db.execute(
+            select(SalesTarget.cabang, func.sum(SalesTarget.target))
+            .where(
                 SalesTarget.level == TargetLevel.CABANG,
-                SalesTarget.cabang == cabang,
-                SalesTarget.periode == periode
-            )
-        )
-        
-        if target_cabang and total_cabang >= target_cabang:
-            cabang_tercapai += 1
-    
+                SalesTarget.periode.in_(months),
+                SalesTarget.cabang.is_not(None),
+            ).group_by(SalesTarget.cabang)
+        ).all()
+    }
+
+    tercapai = 0
+    belum: list[tuple[float, str]] = []
+    for cabang, total_cabang in penjualan_map.items():
+        t = target_map.get(cabang)
+        if t and total_cabang >= t:
+            tercapai += 1
+        else:
+            cap = (total_cabang / t * 100) if t and t > 0 else -1.0
+            belum.append((cap, cabang))
+    belum.sort()  # capaian terendah lebih dulu
+
     return PerusahaanPerformance(
         periode=periode,
+        granularitas=granularitas,
         total_penjualan=total_penjualan,
         target_perusahaan=target_value,
         capaian_pct=capaian_pct,
         sisa_target=sisa_target,
-        jumlah_cabang=jumlah_cabang,
-        cabang_tercapai=cabang_tercapai
+        jumlah_cabang=len(penjualan_map),
+        cabang_tercapai=tercapai,
+        cabang_belum_tercapai=[c for _, c in belum],
     )
 
 

@@ -397,6 +397,7 @@ class SalesmanPerformance(BaseModel):
 class CabangPerformance(BaseModel):
     cabang: str
     periode: str
+    granularitas: str = "bulan"  # bulan | kuartal | tahun
     total_penjualan: float
     target_cabang: float | None
     capaian_pct: float | None
@@ -406,16 +407,24 @@ class CabangPerformance(BaseModel):
     salesman_tidak_layak: int
     peringkat: int | None
     status: str  # "Tercapai", "Perlu dikejar", "Jauh dari target"
+    # PRD F35: nama salesman yang belum layak pada cabang ini (bulan terakhir periode).
+    salesman_belum_layak: list[str] = []
+    # Kebutuhan penjualan per hari kerja untuk menutup sisa target (bila sisa hari kerja diketahui).
+    sisa_hari_kerja: int | None = None
+    kebutuhan_per_hari_kerja: float | None = None
 
 
 class PerusahaanPerformance(BaseModel):
     periode: str
+    granularitas: str = "bulan"  # bulan | kuartal | tahun
     total_penjualan: float
     target_perusahaan: float | None
     capaian_pct: float | None
     sisa_target: float
     jumlah_cabang: int
     cabang_tercapai: int
+    # PRD F35: daftar cabang yang belum mencapai target, terurut capaian terendah.
+    cabang_belum_tercapai: list[str] = []
 
 
 class AssessmentUpdate(BaseModel):

@@ -93,6 +93,65 @@ def test_upload_sales_blocked_when_period_closed(client):
     assert upload_ok(client)["inserted_performance"] == 2
 
 
+def test_quarter_and_year_aggregation(client):
+    """PRD F31/F35: capaian kuartal dan tahun menjumlahkan bulan-bulan yang tercakup."""
+    login("Sales/Marketing")
+
+    def month_xlsx(periode: str, penjualan: float, target_cabang: float, target_perusahaan: float) -> bytes:
+        wb = openpyxl.Workbook()
+        ws = wb.active; ws.title = "Penjualan"
+        ws.append(["employee_id", "nama", "cabang", "periode", "penjualan", "penerimaan", "piutang_outlet", "sisa_bad_debt"])
+        ws.append(["S001", "Andi", "Bandung", periode, penjualan, 0, 0, 0])
+        wt = wb.create_sheet("Target")
+        wt.append(["level", "cabang", "employee_id", "periode", "target_penjualan"])
+        wt.append(["Perusahaan", None, None, periode, target_perusahaan])
+        wt.append(["Cabang", "Bandung", None, periode, target_cabang])
+        wt.append(["Salesman", "Bandung", "S001", periode, target_cabang])
+        buf = io.BytesIO(); wb.save(buf); return buf.getvalue()
+
+    def upload(data: bytes):
+        r = client.post("/sales/preview", files={"file": ("p.xlsx", data)})
+        assert r.status_code == 200, r.text
+        c = client.post(f"/sales/{r.json()['upload_id']}/confirm")
+        assert c.status_code == 200, c.text
+
+    # Q3 2026: Juli 100jt/100jt, Agustus 150jt/100jt, September 50jt/100jt -> total 300jt / target 300jt
+    upload(month_xlsx("2026-07", 100_000_000, 100_000_000, 300_000_000))
+    upload(month_xlsx("2026-08", 150_000_000, 100_000_000, 300_000_000))
+    upload(month_xlsx("2026-09", 50_000_000, 100_000_000, 300_000_000))
+
+    login("HR", email="hr.sales.tes@x")
+    q = client.get("/sales/cabang", params={"periode": "2026-Q3", "granularitas": "kuartal"}).json()
+    assert len(q) == 1
+    row = q[0]
+    assert row["total_penjualan"] == 300_000_000 and row["target_cabang"] == 300_000_000
+    assert round(row["capaian_pct"]) == 100 and row["status"] == "Tercapai"
+    assert row["granularitas"] == "kuartal"
+
+    # Perusahaan kuartal
+    p = client.get("/sales/perusahaan", params={"periode": "2026-Q3", "granularitas": "kuartal"}).json()
+    assert p["total_penjualan"] == 300_000_000 and p["target_perusahaan"] == 900_000_000
+    assert round(p["capaian_pct"], 1) == 33.3 and p["cabang_tercapai"] == 1
+
+    # Tahun 2026 menjumlahkan 12 bulan (hanya 3 bulan berisi data)
+    y = client.get("/sales/perusahaan", params={"periode": "2026", "granularitas": "tahun"}).json()
+    assert y["total_penjualan"] == 300_000_000 and y["granularitas"] == "tahun"
+
+    # Format periode tidak valid ditolak
+    assert client.get("/sales/cabang", params={"periode": "2026-13", "granularitas": "kuartal"}).status_code == 422
+    assert client.get("/sales/perusahaan", params={"periode": "26", "granularitas": "tahun"}).status_code == 422
+
+
+def test_cabang_lists_salesmen_not_eligible(client):
+    """PRD F35: daftar nama salesman belum layak per cabang."""
+    login("Sales/Marketing")
+    upload_ok(client)   # S001 layak (150jt >= 100jt), S002 tidak layak (80jt < 100jt)
+    login("HR", email="hr.sales.tes@x")
+    row = client.get("/sales/cabang", params={"periode": P}).json()[0]
+    assert row["salesman_belum_layak"] == ["Budi"]
+    assert row["salesman_tidak_layak"] == 1 and row["salesman_layak"] == 1
+
+
 def test_access(client):
     login("HR", email="hr.sales.tes@x")
     assert client.post("/sales/preview", files={"file": ("p.xlsx", sales_xlsx())}).status_code == 403
