@@ -74,6 +74,25 @@ def test_upload_and_dashboards(client):
     assert per["total_penjualan"] == 230_000_000 and per["target_perusahaan"] == 500_000_000
 
 
+def test_upload_sales_blocked_when_period_closed(client):
+    """PRD F13: periode tertutup tidak boleh diubah, termasuk lewat unggah Kinerja Penjualan."""
+    tahun, bulan = (int(x) for x in P.split("-"))
+    login("HR", email="hr.sales.tes@x")
+    assert client.post("/periods/close", json={"tahun": tahun, "bulan": bulan, "alasan": "uji"}).status_code == 200
+
+    login("Sales/Marketing")
+    r = client.post("/sales/preview", files={"file": ("p.xlsx", sales_xlsx())})
+    assert r.status_code == 200 and r.json()["can_save"]
+    c = client.post(f"/sales/{r.json()['upload_id']}/confirm")
+    assert c.status_code == 409 and "ditutup" in c.json()["detail"]
+
+    # Setelah dibuka kembali, unggah boleh
+    login("HR", email="hr.sales.tes@x")
+    assert client.post("/periods/reopen", json={"tahun": tahun, "bulan": bulan, "alasan": "uji"}).status_code == 200
+    login("Sales/Marketing")
+    assert upload_ok(client)["inserted_performance"] == 2
+
+
 def test_access(client):
     login("HR", email="hr.sales.tes@x")
     assert client.post("/sales/preview", files={"file": ("p.xlsx", sales_xlsx())}).status_code == 403

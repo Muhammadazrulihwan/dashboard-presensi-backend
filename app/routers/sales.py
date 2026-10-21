@@ -27,6 +27,7 @@ from app.schemas import (
 from app.services import audit
 from app.services.aggregator import _counters
 from app.services.archive import archive_upload
+from app.services import period as period_svc
 from app.services.sales_parser import read_sales_file
 from app.services.sales_template import create_sales_template
 
@@ -187,6 +188,19 @@ def confirm_sales_upload(
             409,
             f"{diputuskan} penilaian sudah Disetujui atau Ditolak dan akan kembali ke Draf. Konfirmasi unggah ulang diperlukan.",
         )
+
+    # Periode tertutup tidak boleh diubah (PRD F13).
+    for periode in sorted(scope):
+        try:
+            tahun, bulan = (int(x) for x in periode.split("-"))
+        except ValueError:
+            continue
+        if period_svc.is_closed(db, tahun, bulan):
+            raise HTTPException(
+                409,
+                f"Periode {periode} sudah ditutup dan tidak dapat diubah. "
+                "Buka kembali periode di menu Tutup Periode bila memang perlu diubah.",
+            )
 
     # Simpan data
     try:

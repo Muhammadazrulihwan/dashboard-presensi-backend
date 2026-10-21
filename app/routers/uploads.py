@@ -12,7 +12,8 @@ from app.core.config import settings
 from app.db import get_db
 from app.deps import HR_ONLY, get_current_user
 from app.models import (
-    ArchiveStatus, ArchivedFile, Attendance, Upload, UploadFile as UploadFileRow, UploadStatus, User,
+    ArchiveStatus, ArchivedFile, Attendance, AttendanceCorrection, RawActivity, RawReport, TimeOffRequest,
+    Upload, UploadFile as UploadFileRow, UploadStatus, User,
 )
 from app.schemas import (
     BulkDeleteRequest, BulkDeleteResponse, ConfirmRequest, ConfirmResponse, PackageConfirmRequest,
@@ -265,6 +266,9 @@ def _delete_upload_rows(db: Session, ups: list[Upload], user_id: int, alasan: st
     PRD F24: file asli tidak dimusnahkan. Bila sudah ada di arsip, arsipnya dipindah ke tempat sampah
     (masih bisa dipulihkan). Bila belum (upload lama sebelum fitur arsip), file disalin ke arsip dulu.
     Tidak commit; pemanggil yang commit dan mencatat audit.
+
+    Data mentah empat sumber dan baris upload_files ikut dibersihkan agar tidak tertinggal sebagai data
+    yatim: baris `uploads` hanya ditandai `deleted` (tidak dihapus), sehingga ON DELETE CASCADE tidak berjalan.
     """
     archive_ids: list[int] = []
     for up in ups:
@@ -280,7 +284,14 @@ def _delete_upload_rows(db: Session, ups: list[Upload], user_id: int, alasan: st
         for row in archived:
             archive_svc.trash(db, row, user_id, alasan)
             archive_ids.append(row.id)
+
+        # Rekap Absensi dan data mentah milik paket ini dibersihkan agar tidak menjadi data yatim.
+        # Baris upload_files sengaja DIPERTAHANKAN sebagai metadata jejak audit (dipakai tab Riwayat "Dihapus").
         db.execute(delete(Attendance).where(Attendance.upload_id == up.id))
+        db.execute(delete(RawActivity).where(RawActivity.upload_id == up.id))
+        db.execute(delete(RawReport).where(RawReport.upload_id == up.id))
+        db.execute(delete(TimeOffRequest).where(TimeOffRequest.upload_id == up.id))
+        db.execute(delete(AttendanceCorrection).where(AttendanceCorrection.upload_id == up.id))
         up.status = UploadStatus.deleted
     return archive_ids
 
@@ -298,6 +309,13 @@ def delete_upload(
     if up is None or up.status == UploadStatus.deleted:
         raise HTTPException(404, "Upload tidak ditemukan")
     alasan = (body.alasan.strip() if body and body.alasan else "") or "Dihapus dari Riwayat Upload"
+
+    # Periode tertutup tidak boleh diubah (PRD F13).
+    if up.date_from and up.date_to:
+        try:
+            ensure_open(db, up.date_from, up.date_to)
+        except ValueError as e:
+            raise HTTPException(409, str(e))
 
     archive_ids = _delete_upload_rows(db, [up], user.id, alasan)
     audit.log(db, user.id, "upload_delete", {
@@ -323,6 +341,14 @@ def bulk_delete_uploads(
     tidak_ditemukan = [i for i in ids if i not in found]
     if not ups:
         raise HTTPException(404, "Tidak ada upload yang bisa dihapus")
+
+    # Periode tertutup tidak boleh diubah (PRD F13). Tolak seluruh permintaan bila ada satu saja yang terkunci.
+    for u in ups:
+        if u.date_from and u.date_to:
+            try:
+                ensure_open(db, u.date_from, u.date_to)
+            except ValueError as e:
+                raise HTTPException(409, f"{u.filename}: {e}")
 
     alasan = (body.alasan or "").strip() or "Dihapus massal dari Riwayat Upload"
     archive_ids = _delete_upload_rows(db, ups, user.id, alasan)

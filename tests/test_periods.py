@@ -61,6 +61,47 @@ def test_closed_period_blocks_upload_and_recalculate(client):
     assert client.post("/settings/recalculate", json={"from": "2026-10-01", "to": "2026-10-31"}).status_code == 200
 
 
+def test_closed_period_blocks_delete_upload(client):
+    """PRD F13: data periode tertutup tidak boleh diubah, termasuk dihapus dari Riwayat Upload."""
+    body, _ = upload(client)
+    close(client)
+    uid = body["upload_id"]
+
+    r = client.request("DELETE", f"/uploads/{uid}", json={"alasan": "uji"})
+    assert r.status_code == 409 and "ditutup" in r.json()["detail"]
+    assert client.get("/dashboard/summary").json()["current"]["records"] > 0
+
+    # Hapus massal juga ditolak
+    rb = client.post("/uploads/bulk-delete", json={"ids": [uid], "alasan": "uji"})
+    assert rb.status_code == 409
+
+    # Setelah dibuka kembali, hapus berhasil
+    reopen(client)
+    assert client.request("DELETE", f"/uploads/{uid}", json={"alasan": "uji"}).status_code == 200
+
+
+def test_delete_upload_cleans_raw_sources(client):
+    """Hapus paket empat sumber harus membersihkan data mentah, bukan meninggalkan baris yatim."""
+    from tests.test_four_sources import activity_xlsx, approval_xlsx, report_xlsx, timeoff_xlsx, upload_package, confirm_package
+    from app.models import AttendanceCorrection, RawActivity, RawReport, TimeOffRequest
+    from sqlalchemy import func
+
+    body = upload_package(client, {
+        "activity": activity_xlsx(), "report": report_xlsx(),
+        "timeoff": timeoff_xlsx(), "approval": approval_xlsx(),
+    })
+    confirm_package(client, body["upload_id"])
+
+    def counts():
+        with SessionLocal() as db:
+            return tuple(db.scalar(select(func.count()).select_from(m)) or 0
+                         for m in (RawActivity, RawReport, TimeOffRequest, AttendanceCorrection))
+
+    assert all(n > 0 for n in counts())
+    assert client.request("DELETE", f"/uploads/{body['upload_id']}", json={"alasan": "uji"}).status_code == 200
+    assert counts() == (0, 0, 0, 0)
+
+
 def test_payroll_status_periode(client):
     upload(client)
     r = client.get("/exports/payroll", params=RANGE)
