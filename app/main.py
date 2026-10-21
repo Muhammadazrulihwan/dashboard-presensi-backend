@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.db import SessionLocal
-from app.routers import admin, archive, auth, dashboard, exports, periods, sales, settings as settings_router, uploads
+from app.routers import admin, archive, auth, dashboard, employees, exports, periods, sales, settings as settings_router, uploads
 from app.routers.audit import router as audit_router
 from app.services.bootstrap import check_production_settings, ensure_admin, ensure_departments
 from app.services.app_settings import ensure_defaults as ensure_app_settings
@@ -40,6 +40,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(uploads.router)
 app.include_router(dashboard.router)
+app.include_router(employees.router)
 app.include_router(settings_router.router)
 app.include_router(exports.router)
 app.include_router(admin.router)

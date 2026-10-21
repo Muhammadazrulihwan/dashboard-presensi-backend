@@ -561,3 +561,29 @@ class PerformanceRow(BaseModel):
     jam_kerja: float
     menit_lembur: int
     dikoreksi: int
+
+# ========== Master karyawan (PRD F15) ==========
+
+class EmployeeOut(BaseModel):
+    employee_id: str
+    nama: str
+    jabatan: str | None = None
+    organisasi: str | None = None
+    cabang: str | None = None
+    status_kerja: str | None = None
+    resign: bool = False
+    updated_at: datetime | None = None
+
+
+class EmployeePage(BaseModel):
+    items: list[EmployeeOut]
+    total: int
+    page: int
+    page_size: int
+
+
+class EmployeeMeta(BaseModel):
+    organisasi: list[str] = []
+    cabang: list[str] = []
+    resign_count: int = 0
+    total: int = 0
