@@ -140,6 +140,40 @@ def test_success_resets_failure_counter(client):
         assert login(client, password="salah").status_code == 401
 
 
+def test_rate_limit_persists_in_database(client):
+    """PRD Bab 12: pembatas login disimpan di DB, jadi berlaku lintas worker/proses."""
+    from app.models import LoginAttempt
+    from app.services import login_limiter
+
+    make_user()
+    email, ip = "hr@tes.local", "testclient"
+    for _ in range(settings.login_max_attempts):
+        assert login(client, password="salah").status_code == 401
+
+    # Baris tersimpan di database, bukan memori proses.
+    with SessionLocal() as db:
+        row = db.scalar(select(LoginAttempt).where(LoginAttempt.email == email, LoginAttempt.ip_address == ip))
+        assert row is not None and row.gagal == settings.login_max_attempts
+        assert row.terkunci_sampai is not None
+        # Limiter membaca dari DB: proses lain (sesi DB baru) juga melihat kunci yang sama.
+        assert login_limiter.locked_seconds(db, email, ip) > 0
+
+    # Kunci kedaluwarsa: baris dibersihkan dan login kembali boleh.
+    with SessionLocal() as db:
+        row = db.scalar(select(LoginAttempt).where(LoginAttempt.email == email))
+        row.terkunci_sampai = datetime.now(timezone.utc) - timedelta(minutes=1)
+        db.commit()
+    assert login(client).status_code == 200
+
+
+def test_rate_limit_is_per_email_and_ip(client):
+    make_user()
+    for _ in range(settings.login_max_attempts):
+        login(client, password="salah")
+    assert login(client).status_code == 429
+    assert login(client, email="lain@tes.local").status_code == 401  # email lain tidak terkunci
+
+
 def test_access_enforced_by_department_with_real_login(client):
     make_user("sales@tes.local", dept="Sales/Marketing")
     assert login(client, "sales@tes.local").status_code == 200

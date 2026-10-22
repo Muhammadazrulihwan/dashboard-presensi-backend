@@ -38,17 +38,82 @@ def import_rows(db: Session, upload_id: int, df: pl.DataFrame, mode: str | None,
 
 # ---------- Paket empat sumber (Rilis B) ----------
 
-def clear_sources(db: Session, tanggal_awal, tanggal_akhir) -> None:
-    """Hapus data mentah empat sumber pada rentang tanggal (diganti oleh paket baru)."""
-    db.execute(delete(RawActivity).where(RawActivity.tanggal >= tanggal_awal, RawActivity.tanggal <= tanggal_akhir))
-    db.execute(delete(RawReport).where(RawReport.tanggal >= tanggal_awal, RawReport.tanggal <= tanggal_akhir))
-    db.execute(delete(TimeOffRequest).where(
-        TimeOffRequest.tanggal_mulai <= tanggal_akhir,
-        (TimeOffRequest.tanggal_selesai.is_(None)) | (TimeOffRequest.tanggal_selesai >= tanggal_awal),
-    ))
-    db.execute(delete(AttendanceCorrection).where(
-        AttendanceCorrection.tanggal_efektif >= tanggal_awal, AttendanceCorrection.tanggal_efektif <= tanggal_akhir,
-    ))
+def clear_sources(db: Session, tanggal_awal, tanggal_akhir, kinds: set[str] | None = None) -> None:
+    """Hapus data mentah pada rentang tanggal, HANYA untuk sumber yang diunggah ulang.
+
+    PRD bagian 5: file yang belum ada boleh diunggah belakangan. Karena itu paket yang hanya memuat
+    sebagian sumber tidak boleh menghapus sumber lain yang sudah tersimpan untuk rentang yang sama.
+    `kinds` = jenis sumber yang ada di paket (activity/report/timeoff/approval); None = semua.
+    """
+    kinds = {"activity", "report", "timeoff", "approval"} if kinds is None else set(kinds)
+    if "activity" in kinds:
+        db.execute(delete(RawActivity).where(RawActivity.tanggal >= tanggal_awal, RawActivity.tanggal <= tanggal_akhir))
+    if "report" in kinds:
+        db.execute(delete(RawReport).where(RawReport.tanggal >= tanggal_awal, RawReport.tanggal <= tanggal_akhir))
+    if "timeoff" in kinds:
+        db.execute(delete(TimeOffRequest).where(
+            TimeOffRequest.tanggal_mulai <= tanggal_akhir,
+            (TimeOffRequest.tanggal_selesai.is_(None)) | (TimeOffRequest.tanggal_selesai >= tanggal_awal),
+        ))
+    if "approval" in kinds:
+        db.execute(delete(AttendanceCorrection).where(
+            AttendanceCorrection.tanggal_efektif >= tanggal_awal, AttendanceCorrection.tanggal_efektif <= tanggal_akhir,
+        ))
+
+
+def load_sources(db: Session, tanggal_awal, tanggal_akhir, exclude: set[str] | None = None) -> dict[str, list[dict]]:
+    """Baca data mentah yang sudah tersimpan pada rentang tanggal, dalam bentuk yang sama dengan hasil parser.
+
+    Dipakai agar paket yang hanya memuat sebagian sumber tetap digabung dengan sumber lain yang sudah ada
+    (PRD bagian 5). `exclude` = sumber yang akan diganti oleh file baru sehingga tidak perlu dibaca.
+    """
+    exclude = exclude or set()
+    out: dict[str, list[dict]] = {"activity": [], "report": [], "timeoff": [], "approval": []}
+
+    if "activity" not in exclude:
+        rows = db.scalars(select(RawActivity).where(
+            RawActivity.tanggal >= tanggal_awal, RawActivity.tanggal <= tanggal_akhir))
+        out["activity"] = [
+            {"employee_id": r.employee_id, "tanggal": r.tanggal, "waktu_menit": r.waktu_menit,
+             "tipe": r.tipe, "lokasi": r.lokasi, "shift_name": r.shift_name, "status": r.status}
+            for r in rows
+        ]
+    if "report" not in exclude:
+        rows = db.scalars(select(RawReport).where(
+            RawReport.tanggal >= tanggal_awal, RawReport.tanggal <= tanggal_akhir))
+        out["report"] = [
+            {"employee_id": r.employee_id, "nama": r.nama, "tanggal": r.tanggal, "shift_name": r.shift_name,
+             "jadwal_masuk_menit": r.jadwal_masuk_menit, "jadwal_pulang_menit": r.jadwal_pulang_menit,
+             "check_in_menit": r.check_in_menit, "check_out_menit": r.check_out_menit,
+             "late_in_menit": r.late_in_menit, "early_out_menit": r.early_out_menit,
+             "actual_hour": r.actual_hour, "real_hour": r.real_hour, "kode_kehadiran": r.kode_kehadiran,
+             "organisasi": r.organisasi, "cabang": r.cabang}
+            for r in rows
+        ]
+    if "timeoff" not in exclude:
+        rows = db.scalars(select(TimeOffRequest).where(
+            TimeOffRequest.tanggal_mulai <= tanggal_akhir,
+            (TimeOffRequest.tanggal_selesai.is_(None)) | (TimeOffRequest.tanggal_selesai >= tanggal_awal),
+        ))
+        out["timeoff"] = [
+            {"employee_id": r.employee_id, "request_id": r.request_id, "tanggal_mulai": r.tanggal_mulai,
+             "tanggal_selesai": r.tanggal_selesai, "policy_code": r.policy_code, "policy_name": r.policy_name,
+             "tipe": r.tipe, "durasi": r.durasi, "status": r.status}
+            for r in rows
+        ]
+    if "approval" not in exclude:
+        rows = db.scalars(select(AttendanceCorrection).where(
+            AttendanceCorrection.tanggal_efektif >= tanggal_awal,
+            AttendanceCorrection.tanggal_efektif <= tanggal_akhir,
+        ))
+        out["approval"] = [
+            {"employee_id": r.employee_id, "tanggal_efektif": r.tanggal_efektif,
+             "jam_masuk_menit": r.jam_masuk_menit, "jam_keluar_menit": r.jam_keluar_menit,
+             "alasan": r.alasan, "alasan_kategori": r.alasan_kategori, "status": r.status,
+             "approver": r.approver, "diajukan_pada": r.diajukan_pada}
+            for r in rows
+        ]
+    return out
 
 
 def save_sources(db: Session, upload_id: int, parsed: dict) -> dict:

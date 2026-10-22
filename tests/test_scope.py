@@ -91,3 +91,38 @@ def test_performance_ranking_scope_and_access(client):
     for dept in ("HR", "Audit", "Sales/Marketing"):
         as_dept(dept)
         assert client.get("/dashboard/performance", params={"from": "2026-10-05", "to": "2026-10-09"}).status_code == 200
+
+def test_performance_ranking_none_always_last(client):
+    """Regresi: karyawan tanpa hari kerja (kehadiran None) harus selalu di urutan bawah.
+
+    Sebelumnya sort_key + reverse membuat None naik ke atas pada urutan menurun.
+    """
+    from datetime import date
+
+    from app.db import SessionLocal
+    from app.models import Attendance, Upload, UploadStatus
+
+    with SessionLocal() as db:
+        # Upload induk agar FK attendance.upload_id terpenuhi (penting di MySQL).
+        up = Upload(filename="regresi.xlsx", stored_path="/tmp/regresi.xlsx", uploaded_by=1,
+                    status=UploadStatus.saved)
+        db.add(up)
+        db.flush()
+        # 2026-10-05 adalah hari kerja. Satu baris tanpa hari kerja -> kehadiran_pct None.
+        db.add(Attendance(
+            upload_id=up.id, nik="ZZZ", nama="Tanpa Hari Kerja", tanggal=date(2026, 10, 5), periode_ym="2026-10",
+            departemen="HR", shift="REGULER", status="Libur", hari_kerja=False, menit_terlambat=0,
+            terlambat=False, menit_pulang_cepat=0, menit_lembur=0,
+        ))
+        db.add(Attendance(
+            upload_id=up.id, nik="AAA", nama="Ada Hari Kerja", tanggal=date(2026, 10, 5), periode_ym="2026-10",
+            departemen="HR", shift="REGULER", status="Hadir", jam_masuk_menit=8 * 60, hari_kerja=True,
+            menit_terlambat=0, terlambat=False, menit_pulang_cepat=0, menit_lembur=0,
+        ))
+        db.commit()
+
+    params = {"from": "2026-10-05", "to": "2026-10-05"}
+    for order in ("desc", "asc"):
+        body = client.get("/dashboard/performance", params={**params, "order": order}).json()
+        assert body[-1]["nik"] == "ZZZ", (order, body)
+        assert body[-1]["kehadiran_pct"] is None

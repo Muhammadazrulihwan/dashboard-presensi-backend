@@ -78,6 +78,8 @@ def get_records(
             "jam_kerja_nyata": r.jam_kerja_nyata, "dikoreksi": bool(r.dikoreksi),
             "koreksi_alasan": r.koreksi_alasan, "koreksi_approver": r.koreksi_approver,
             "clock_out_hilang": bool(r.clock_out_hilang), "selisih_report": r.selisih_report,
+            "sumber": r.sumber, "jumlah_ketukan": r.jumlah_ketukan, "clock_in_hilang": bool(r.clock_in_hilang),
+            "izin_kode": r.izin_kode, "izin_nama": r.izin_nama, "izin_tipe": r.izin_tipe,
         }
         for r in rows
     ]

@@ -137,6 +137,13 @@ class AttendanceOut(BaseModel):
     koreksi_approver: str | None = None
     clock_out_hilang: bool = False
     selisih_report: str | None = None
+    # Jejak sumber dan izin (PRD Bab 10 "Kolom sumber, koreksi, izin, dan tanda selisih").
+    sumber: str | None = None
+    jumlah_ketukan: int | None = None
+    clock_in_hilang: bool = False
+    izin_kode: str | None = None
+    izin_nama: str | None = None
+    izin_tipe: str | None = None
 
 
 class RecordsPage(BaseModel):

@@ -1,17 +1,15 @@
-import time
-from threading import Lock
-
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.security import burn_time, create_token, verify_password
-from app.db import get_db
+from app.db import SessionLocal, get_db
 from app.deps import get_current_user
-from app.models import User
+from app.models import LoginAttempt, User
 from app.services import audit
+from app.services import login_limiter
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -35,38 +33,15 @@ def _me(u: User) -> MeOut:
     return MeOut(id=u.id, email=u.email, full_name=u.full_name, departemen=u.departemen, is_approver=u.is_approver)
 
 
-# Pembatas percobaan login per (email, IP), disimpan di memori proses.
-# Cukup untuk satu instance; bila API dijalankan multi-worker, pindahkan ke Redis atau tabel DB.
-_fails: dict[tuple[str, str], tuple[int, float]] = {}
-_lock = Lock()
-
-
-def _locked_seconds(key: tuple[str, str]) -> int:
-    with _lock:
-        count, until = _fails.get(key, (0, 0.0))
-        left = until - time.monotonic()
-        if count >= settings.login_max_attempts and left > 0:
-            return int(left) + 1
-        if count >= settings.login_max_attempts:  # kunci sudah habis
-            _fails.pop(key, None)
-        return 0
-
-
-def _register_fail(key: tuple[str, str]) -> None:
-    with _lock:
-        count, _ = _fails.get(key, (0, 0.0))
-        _fails[key] = (count + 1, time.monotonic() + settings.login_lock_minutes * 60)
-
-
-def _clear_fails(key: tuple[str, str]) -> None:
-    with _lock:
-        _fails.pop(key, None)
+# Pembatas percobaan login disimpan di tabel `login_attempts` (lihat services/login_limiter.py),
+# bukan di memori proses, agar berlaku juga saat backend dijalankan multi-worker (PRD Bab 12).
 
 
 def reset_rate_limit() -> None:
-    """Dipakai tes."""
-    with _lock:
-        _fails.clear()
+    """Dipakai tes: bersihkan seluruh hitungan percobaan login."""
+    with SessionLocal() as db:
+        db.execute(delete(LoginAttempt))
+        db.commit()
 
 
 def _set_cookie(response: Response, token: str) -> None:
@@ -81,9 +56,8 @@ def _set_cookie(response: Response, token: str) -> None:
 def login(body: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)):
     email = body.email.strip().lower()
     ip = request.client.host if request.client else "-"
-    key = (email, ip)
 
-    wait = _locked_seconds(key)
+    wait = login_limiter.locked_seconds(db, email, ip)
     if wait:
         audit.log(db, None, "login_blocked", {"email": email}, ip)
         db.commit()
@@ -97,12 +71,12 @@ def login(body: LoginRequest, request: Request, response: Response, db: Session 
         burn_time()
 
     if not ok:
-        _register_fail(key)
+        login_limiter.register_fail(db, email, ip)
         audit.log(db, user.id if user else None, "login_failed", {"email": email}, ip)
         db.commit()
         raise HTTPException(401, BAD_CREDENTIALS)
 
-    _clear_fails(key)
+    login_limiter.clear(db, email, ip)
     audit.log(db, user.id, "login", None, ip)
     db.commit()
     _set_cookie(response, create_token(user.id))

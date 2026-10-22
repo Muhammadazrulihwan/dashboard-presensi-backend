@@ -60,6 +60,79 @@ def get_sales_meta(db: Session = Depends(get_db)):
     return {"periodes": list(periodes), "cabang": list(cabang)}
 
 
+@router.get("/uploads", dependencies=[PERFORMANCE])
+def list_sales_uploads(db: Session = Depends(get_db)):
+    """Daftar upload Kinerja Penjualan yang masih menyimpan data (status saved), untuk dikelola/dihapus.
+
+    Hanya upload yang benar-benar punya baris penjualan/target yang ditampilkan, sehingga data yatim
+    lama tidak lagi muncul sebagai paket yang bisa dihapus.
+    """
+    rows = db.execute(
+        select(Upload, User.full_name)
+        .join(User, User.id == Upload.uploaded_by)
+        .where(Upload.status == UploadStatus.saved)
+        .order_by(Upload.id.desc())
+    ).all()
+    out = []
+    for up, uploader in rows:
+        periode = sorted(set(db.scalars(
+            select(SalesPerformance.periode).where(SalesPerformance.upload_id == up.id).distinct()
+        ).all()))
+        if not periode:
+            continue
+        out.append({
+            "id": up.id,
+            "filename": up.filename,
+            "uploader": uploader,
+            "created_at": up.created_at,
+            "row_count": up.row_count,
+            "periode": periode,
+        })
+    return out
+
+
+@router.delete("/uploads/{upload_id}", dependencies=[SALES_ONLY])
+def delete_sales_upload(
+    upload_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Hapus satu upload Kinerja Penjualan: data penjualan, target, dan penilaian dibersihkan.
+
+    File asli dipindah ke tempat sampah arsip (masih bisa dipulihkan). Periode tertutup ditolak.
+    """
+    from app.services.deletion import delete_upload_rows
+
+    up = db.get(Upload, upload_id)
+    if up is None or up.status == UploadStatus.deleted:
+        raise HTTPException(404, "Upload tidak ditemukan")
+
+    periods = sorted(set(db.scalars(
+        select(SalesPerformance.periode).where(SalesPerformance.upload_id == up.id).distinct()
+    ).all()))
+    for periode in periods:
+        try:
+            tahun, bulan = (int(x) for x in periode.split("-"))
+        except ValueError:
+            continue
+        if period_svc.is_closed(db, tahun, bulan):
+            raise HTTPException(
+                409,
+                f"Periode {periode} sudah ditutup dan tidak dapat diubah. "
+                "Buka kembali periode di menu Tutup Periode bila memang perlu diubah.",
+            )
+
+    alasan = "Dihapus dari Kinerja Penjualan"
+    archive_ids = delete_upload_rows(db, [up], user.id, alasan)
+    audit.log(db, user.id, "sales_upload_delete", {
+        "upload_id": up.id, "filename": up.filename, "periode": periods, "alasan": alasan,
+        "arsip_ke_tempat_sampah": archive_ids,
+    }, _ip(request))
+    db.commit()
+    return {"id": up.id, "dihapus": True, "periode": periods}
+
+
 @router.post("/preview", response_model=SalesPreviewResponse, dependencies=[SALES_ONLY])
 def preview_sales_upload(
     request: Request,

@@ -264,6 +264,12 @@ def employee_detail(db: Session, f: Filters, nik: str) -> dict | None:
             "koreksi_approver": r.koreksi_approver,
             "clock_out_hilang": bool(r.clock_out_hilang),
             "selisih_report": r.selisih_report,
+            "sumber": r.sumber,
+            "jumlah_ketukan": r.jumlah_ketukan,
+            "clock_in_hilang": bool(r.clock_in_hilang),
+            "izin_kode": r.izin_kode,
+            "izin_nama": r.izin_nama,
+            "izin_tipe": r.izin_tipe,
         }
         for r in rows
     ]
@@ -364,10 +370,12 @@ def performance_ranking(db: Session, f: Filters, sort: str, order: str) -> list[
 
     def sort_key(x):
         v = key(x)
-        # Angka None (mis. kehadiran tanpa hari kerja) ditaruh paling bawah pada urutan menurun.
+        # Angka None (mis. kehadiran tanpa hari kerja) harus selalu di paling bawah, baik urutan
+        # naik maupun turun. Karena sort memakai reverse untuk "desc", penanda None dibuat berbeda
+        # per arah agar tetap berada di bawah.
         if v is None:
-            return (1, 0)
-        return (0, v) if not isinstance(v, str) else (0, v)
+            return (0,) if order == "desc" else (1, 0)
+        return (1, v) if order == "desc" else (0, v)
 
     out.sort(key=sort_key, reverse=(order == "desc"))
     return out

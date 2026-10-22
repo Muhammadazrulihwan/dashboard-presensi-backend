@@ -74,3 +74,9 @@ Filter dashboard dan export: `from`, `to` (YYYY-MM-DD), `departemen`, `status` (
 Aturan peran berjalan di API: HR Admin penuh, atasan dibatasi ke divisinya, manajemen hanya agregat (tanpa data per orang),
 dan diuji lewat tes. Akun admin awal dibuat dari `ADMIN_EMAIL`/`ADMIN_PASSWORD` saat startup bila belum ada.
 
+## Pembatas percobaan login
+Hitungan percobaan login disimpan di tabel `login_attempts` (per email + IP), bukan di memori proses,
+sehingga tetap berlaku bila backend dijalankan multi-worker. Baris dibersihkan otomatis saat login berhasil,
+saat masa kunci habis, dan saat startup untuk entri kedaluwarsa. Pengaturan: `LOGIN_MAX_ATTEMPTS` dan
+`LOGIN_LOCK_MINUTES`.
+

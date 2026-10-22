@@ -67,10 +67,32 @@ def test_archive_search_by_employee_id(client):
     assert client.get("/archive", params={"employee_id": "002"}).json()["total"] == 1
     # Tidak ada yang cocok
     assert client.get("/archive", params={"employee_id": "999"}).json()["total"] == 0
-    # Presisi, bukan substring: "00" tidak boleh mencocokkan "001"/"002"
-    assert client.get("/archive", params={"employee_id": "00"}).json()["total"] == 0
+    # Pencarian sebagian (substring): "00" mencocokkan "001"/"002" -> file yang sama.
+    # Diubah dari pencocokan presisi agar mengetik sebagian ID sudah menemukan hasilnya.
+    assert client.get("/archive", params={"employee_id": "00"}).json()["total"] == 1
     # Pencarian ID tidak peka huruf besar-kecil dan spasi di tepi diabaikan
     assert client.get("/archive", params={"employee_id": " 001 "}).json()["total"] == 1
+
+
+def test_archive_search_by_employee_id_prefix(client):
+    """Regresi: mengetik sebagian Employee ID (mis. "LS") harus menemukan arsip, bukan kosong."""
+    from app.db import SessionLocal
+    from app.models import ArchivedFile, ArchivedFileEmployee
+
+    upload(client)
+    with SessionLocal() as db:
+        arsip = db.scalar(select(ArchivedFile))
+        for eid in ("LS019", "LS021", "LS417"):
+            db.add(ArchivedFileEmployee(archive_id=arsip.id, employee_id=eid))
+        db.commit()
+
+    # Awalan "LS" harus menemukan file yang memuat LS019/LS021/LS417.
+    assert client.get("/archive", params={"employee_id": "LS"}).json()["total"] == 1
+    assert client.get("/archive", params={"employee_id": "ls"}).json()["total"] == 1
+    # ID lengkap tetap akurat.
+    assert client.get("/archive", params={"employee_id": "LS019"}).json()["total"] == 1
+    # ID yang tidak ada tetap kosong.
+    assert client.get("/archive", params={"employee_id": "ZZ"}).json()["total"] == 0
 
 
 def test_trash_restore_and_purge_flow(client):

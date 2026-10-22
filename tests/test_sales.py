@@ -428,3 +428,73 @@ def test_department_warning_accepts_configured_sales_org_names(client):
     login("Sales/Marketing")
     r = client.post("/sales/preview", files={"file": ("p.xlsx", sales_xlsx())})
     assert not any("selain Sales/Marketing" in w for w in r.json()["warnings"])
+
+# ---------- Regresi: hapus upload penjualan harus membersihkan seluruh data ----------
+
+def test_delete_sales_upload_clears_all_sales_data(client):
+    """Bug lama: menghapus upload tidak membersihkan sales_performance/targets/assessments,
+    sehingga data penjualan tetap tampil walau upload-nya sudah dihapus (data yatim)."""
+    login("Sales/Marketing")
+    res = upload_ok(client)
+    upload_id = res["upload"]["id"]
+
+    with SessionLocal() as db:
+        assert db.query(SalesPerformance).count() == 2
+        assert db.query(SalesTarget).count() == 4
+        assert db.query(SalesAssessment).count() == 2
+
+    # Endpoint daftar upload penjualan menampilkan paket ini.
+    lst = client.get("/sales/uploads")
+    assert lst.status_code == 200
+    assert any(u["id"] == upload_id for u in lst.json())
+
+    r = client.delete(f"/sales/uploads/{upload_id}")
+    assert r.status_code == 200, r.text
+
+    with SessionLocal() as db:
+        assert db.query(SalesPerformance).count() == 0
+        assert db.query(SalesTarget).count() == 0
+        assert db.query(SalesAssessment).count() == 0
+
+    # Dashboard tidak lagi menampilkan data periode itu.
+    assert client.get("/sales/salesman", params={"periode": P}).json() == []
+    assert client.get("/sales/uploads").json() == []
+
+
+def test_delete_sales_upload_blocked_when_period_closed(client):
+    """Periode tertutup tidak boleh diubah lewat hapus upload penjualan (PRD F13)."""
+    from app.services import period as period_svc
+
+    login("Sales/Marketing")
+    res = upload_ok(client)
+    upload_id = res["upload"]["id"]
+    tahun, bulan = (int(x) for x in P.split("-"))
+    with SessionLocal() as db:
+        period_svc.close(db, tahun, bulan, 1, "uji")
+        db.commit()
+    try:
+        assert client.delete(f"/sales/uploads/{upload_id}").status_code == 409
+        with SessionLocal() as db:
+            assert db.query(SalesPerformance).count() == 2   # masih utuh
+    finally:
+        with SessionLocal() as db:
+            period_svc.reopen(db, tahun, bulan, 1, "buka lagi")
+            db.commit()
+
+
+def test_delete_presensi_upload_also_clears_sales_rows(client):
+    """Hapus paket presensi yang upload_id-nya juga punya data penjualan harus ikut bersih."""
+    from app.services.deletion import delete_upload_rows
+    from app.models import Upload
+
+    login("Sales/Marketing")
+    res = upload_ok(client)
+    upload_id = res["upload"]["id"]
+
+    with SessionLocal() as db:
+        up = db.get(Upload, upload_id)
+        delete_upload_rows(db, [up], 1, "uji")
+        db.commit()
+        assert db.query(SalesPerformance).count() == 0
+        assert db.query(SalesTarget).count() == 0
+        assert db.query(SalesAssessment).count() == 0

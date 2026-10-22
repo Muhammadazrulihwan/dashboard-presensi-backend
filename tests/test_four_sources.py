@@ -10,7 +10,9 @@ import pytest
 from sqlalchemy import select
 
 from app.db import SessionLocal
-from app.models import Attendance, AttendanceCorrection, Employee, RawActivity, RawReport, TimeOffRequest
+from app.models import (
+    ArchivedFile, Attendance, AttendanceCorrection, Employee, RawActivity, RawReport, TimeOffRequest,
+)
 from tests.test_presensi import rows
 
 # 2026-09-01 Selasa ... 2026-09-05 Sabtu (hari kerja Senin-Sabtu). 2026-09-06 Minggu libur.
@@ -335,3 +337,72 @@ def test_completeness_marks_sources_present_after_package(client):
     status = {s["kode"]: s["status"] for s in c["sumber"]}
     for kode in ("activity", "report", "timeoff", "approval", "presensi"):
         assert status[kode] == "tersedia", (kode, status)
+
+# ---------- Regresi bug sinkronisasi PRD (audit) ----------
+
+def test_partial_package_keeps_other_sources(client):
+    """PRD bagian 5: file yang belum ada boleh diunggah belakangan.
+
+    Regresi: paket yang hanya memuat sebagian sumber tidak boleh menghapus data mentah sumber lain
+    pada rentang yang sama. Sebelum perbaikan, unggah Report saja menghapus Activity sehingga
+    karyawan yang tadinya Hadir berubah menjadi Alpa.
+    """
+    body = upload_package(client, {"activity": activity_xlsx()})
+    confirm_package(client, body["upload_id"])
+
+    body2 = upload_package(client, {"report": report_xlsx()})
+    confirm_package(client, body2["upload_id"], mode="overwrite")
+
+    with SessionLocal() as db:
+        # Data mentah Activity lama harus tetap ada.
+        assert len(db.scalars(select(RawActivity)).all()) == 7
+        assert len(db.scalars(select(RawReport)).all()) == 3
+        row = db.scalar(select(Attendance).where(
+            Attendance.nik == "LS019", Attendance.tanggal == "2026-09-01"))
+        # Jam dari Activity tetap dipakai, status Hadir (bukan Alpa).
+        assert row.jam_masuk_menit == 8 * 60 + 20
+        assert row.jam_keluar_menit == 17 * 60 + 5
+        assert row.status == "Hadir"
+        assert "activity" in (row.sumber or "")
+
+
+def test_report_schedule_wins_over_master_shift(client):
+    """PRD bagian 4 aturan prioritas #4: jadwal shift diambil dari Report Attendance.
+
+    Regresi: master shift tidak boleh menimpa jadwal Report. Jam masuk 08:20 dengan jadwal Report
+    09:00-15:00 berarti TIDAK terlambat (0 menit), bukan 20 menit seperti bila memakai master 08:00.
+    """
+    def report_shift_0900() -> bytes:
+        def build(wb):
+            ws = wb.active
+            ws.title = "Export Attendance Report"
+            ws.append(["Employee ID", "Employee Name", "Date", "Shift Name", "Schedule In", "Schedule Out",
+                       "Check In", "Check Out", "Late In", "Early Out", "Actual Working Hour", "Real Working Hour",
+                       "Attendance Code", "Organization", "Branch"])
+            ws.append(["LS019", "Kamaludin", "2026-09-01", "REGULER", "09:00", "15:00", "08:20", "15:05",
+                       "", "", "6:00", "6:45", "H", "IT", "PT Lenko - Pusat"])
+        return _wb_bytes(build)
+
+    body = upload_package(client, {"report": report_shift_0900()})
+    confirm_package(client, body["upload_id"])
+    with SessionLocal() as db:
+        row = db.scalar(select(Attendance).where(
+            Attendance.nik == "LS019", Attendance.tanggal == "2026-09-01"))
+        # 08:20 lebih awal dari jadwal 09:00 -> tidak terlambat.
+        assert row.menit_terlambat == 0
+        # 15:05 setelah jadwal 15:00 -> tidak pulang cepat.
+        assert row.menit_pulang_cepat == 0
+
+
+def test_package_archives_every_source_file(client):
+    """PRD F22: keempat file Excel asli disalin ke arsip, bukan hanya file pertama."""
+    body = upload_package(client, {
+        "activity": activity_xlsx(), "report": report_xlsx(),
+        "timeoff": timeoff_xlsx(), "approval": approval_xlsx(),
+    })
+    confirm_package(client, body["upload_id"])
+    with SessionLocal() as db:
+        arsip = db.scalars(select(ArchivedFile)).all()
+        assert len(arsip) == 4
+        nama = {a.nama_asli for a in arsip}
+        assert {"activity.xlsx", "report.xlsx", "timeoff.xlsx", "approval.xlsx"} <= nama

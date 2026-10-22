@@ -128,18 +128,19 @@ def merge(
         izin = izin_idx.get((eid, d))
         kor = koreksi_idx.get((eid, d))
 
-        # ---- Jadwal shift ----
-        shift = None
-        start, end = DEFAULT_START, DEFAULT_END
-        if rep and rep.get("shift_name"):
-            shift = rep["shift_name"]
-            if rep.get("jadwal_masuk_menit") is not None:
-                start = rep["jadwal_masuk_menit"]
-            if rep.get("jadwal_pulang_menit") is not None:
-                end = _end_adjusted(start, rep["jadwal_pulang_menit"])
-        shift = shift or "REGULER"
-        if shift in rules:
-            start, end = rules[shift]
+        # ---- Jadwal shift (PRD bagian 4 aturan prioritas #4) ----
+        # Jadwal dari Report Attendance diutamakan; master shift hanya cadangan bila Report tidak
+        # memuat jadwal untuk baris itu. Sebelumnya master selalu menimpa jadwal Report sehingga
+        # keterlambatan dihitung dari jam master, bukan dari jadwal shift sebenarnya.
+        shift = (rep or {}).get("shift_name") or "REGULER"
+        master_start, master_end = rules.get(shift, (DEFAULT_START, DEFAULT_END))
+        rep_masuk = (rep or {}).get("jadwal_masuk_menit")
+        rep_pulang = (rep or {}).get("jadwal_pulang_menit")
+        start = rep_masuk if rep_masuk is not None else master_start
+        if rep_pulang is not None:
+            end = _end_adjusted(start, rep_pulang)
+        else:
+            end = master_end
 
         workday = _workday(d, holidays)
 

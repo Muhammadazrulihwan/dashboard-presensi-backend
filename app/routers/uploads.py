@@ -25,9 +25,10 @@ from app.services import archive as archive_svc
 from app.services.archive import archive_upload
 from app.services.calculator import compute
 from app.services.cleanup import discard_file
+from app.services.deletion import delete_upload_rows
 from app.services.file_reader import read_table
 from app.services.importer import (
-    clear_sources, find_conflicts, import_rows, save_rekap, save_sources, upsert_employees,
+    clear_sources, find_conflicts, import_rows, load_sources, save_rekap, save_sources, upsert_employees,
 )
 from app.services.merge import build_employee_master, merge
 from app.services.period import ensure_open
@@ -267,33 +268,11 @@ def _delete_upload_rows(db: Session, ups: list[Upload], user_id: int, alasan: st
     (masih bisa dipulihkan). Bila belum (upload lama sebelum fitur arsip), file disalin ke arsip dulu.
     Tidak commit; pemanggil yang commit dan mencatat audit.
 
-    Data mentah empat sumber dan baris upload_files ikut dibersihkan agar tidak tertinggal sebagai data
-    yatim: baris `uploads` hanya ditandai `deleted` (tidak dihapus), sehingga ON DELETE CASCADE tidak berjalan.
+    Seluruh data turunan (termasuk Kinerja Penjualan) dibersihkan lewat `services/deletion.py` agar
+    tidak tertinggal sebagai data yatim: baris `uploads` hanya ditandai `deleted` (tidak dihapus),
+    sehingga ON DELETE CASCADE tidak berjalan.
     """
-    archive_ids: list[int] = []
-    for up in ups:
-        archived = db.scalars(
-            select(ArchivedFile).where(ArchivedFile.upload_id == up.id, ArchivedFile.status == ArchiveStatus.aktif)
-        ).all()
-        if not archived and Path(up.stored_path).exists():
-            archive_upload(db, up, "presensi", periode_awal=up.date_from, periode_akhir=up.date_to)
-            db.flush()
-            archived = db.scalars(
-                select(ArchivedFile).where(ArchivedFile.upload_id == up.id, ArchivedFile.status == ArchiveStatus.aktif)
-            ).all()
-        for row in archived:
-            archive_svc.trash(db, row, user_id, alasan)
-            archive_ids.append(row.id)
-
-        # Rekap Absensi dan data mentah milik paket ini dibersihkan agar tidak menjadi data yatim.
-        # Baris upload_files sengaja DIPERTAHANKAN sebagai metadata jejak audit (dipakai tab Riwayat "Dihapus").
-        db.execute(delete(Attendance).where(Attendance.upload_id == up.id))
-        db.execute(delete(RawActivity).where(RawActivity.upload_id == up.id))
-        db.execute(delete(RawReport).where(RawReport.upload_id == up.id))
-        db.execute(delete(TimeOffRequest).where(TimeOffRequest.upload_id == up.id))
-        db.execute(delete(AttendanceCorrection).where(AttendanceCorrection.upload_id == up.id))
-        up.status = UploadStatus.deleted
-    return archive_ids
+    return delete_upload_rows(db, ups, user_id, alasan)
 
 
 @router.delete("/{upload_id}", response_model=UploadOut)
@@ -385,12 +364,21 @@ def _parse_package(files: dict[str, tuple[Path, str]]) -> tuple[dict, list[str]]
     return parsed, errors
 
 
-def _merge_from_parsed(db: Session, parsed: dict) -> tuple[list[dict], date, date]:
-    """Gabungkan sumber menjadi Rekap Absensi. Rentang diambil dari tanggal data terkumpul."""
-    acts = parsed["activity"].rows if "activity" in parsed else []
-    reps = parsed["report"].rows if "report" in parsed else []
-    tios = parsed["timeoff"].rows if "timeoff" in parsed else []
-    apps = parsed["approval"].rows if "approval" in parsed else []
+def _merge_from_parsed(db: Session, parsed: dict, extra: dict[str, list[dict]] | None = None) -> tuple[list[dict], date, date]:
+    """Gabungkan sumber menjadi Rekap Absensi. Rentang diambil dari tanggal data terkumpul.
+
+    `extra` = data mentah lama untuk sumber yang TIDAK ikut di paket ini, supaya unggah sebagian
+    (mis. hanya Report) tidak menghapus pengaruh sumber lain yang sudah tersimpan (PRD bagian 5).
+    """
+    def rows_of(kind: str) -> list[dict]:
+        if kind in parsed:
+            return parsed[kind].rows
+        return (extra or {}).get(kind, [])
+
+    acts = rows_of("activity")
+    reps = rows_of("report")
+    tios = rows_of("timeoff")
+    apps = rows_of("approval")
     dates = [r["tanggal"] for r in acts] + [r["tanggal"] for r in reps] + [r["tanggal_efektif"] for r in apps]
     for t in tios:
         dates.append(t["tanggal_mulai"])
@@ -518,14 +506,34 @@ def package_confirm(
         raise HTTPException(409, "File tidak lolos validasi: " + "; ".join(errors))
 
     try:
-        rows, d1, d2 = _merge_from_parsed(db, parsed)
+        # Jenis sumber yang benar-benar ada di paket ini; hanya sumber ini yang diganti.
+        kinds = set(parsed)
+        # Baca sumber lain yang sudah tersimpan pada rentang tanggal paket agar tidak ikut hilang.
+        # Rentang tanggal ditentukan dari file yang diunggah (tanggal data di dalamnya).
+        uploaded_dates: list[date] = []
+        for kind, p in parsed.items():
+            for r in p.rows:
+                if kind == "approval":
+                    uploaded_dates.append(r["tanggal_efektif"])
+                elif kind == "timeoff":
+                    uploaded_dates.append(r["tanggal_mulai"])
+                    if r.get("tanggal_selesai"):
+                        uploaded_dates.append(r["tanggal_selesai"])
+                else:
+                    uploaded_dates.append(r["tanggal"])
+        if not uploaded_dates:
+            raise HTTPException(422, "Tidak ada tanggal data pada file yang diunggah")
+        r1, r2 = min(uploaded_dates), max(uploaded_dates)
+        extra = load_sources(db, r1, r2, exclude=kinds)
+
+        rows, d1, d2 = _merge_from_parsed(db, parsed, extra)
         # Periode tertutup tidak boleh diubah (PRD F13).
         try:
             ensure_open(db, d1, d2)
         except ValueError as e:
             raise HTTPException(409, str(e))
-        # Data mentah diganti untuk rentang tanggal yang sama, lalu rekap disimpan.
-        clear_sources(db, d1, d2)
+        # Hanya data mentah sumber yang diunggah ulang yang diganti untuk rentang tanggalnya.
+        clear_sources(db, d1, d2, kinds=kinds)
         sumber = save_sources(db, up.id, parsed)
         employees = upsert_employees(db, build_employee_master(
             parsed["report"].rows if "report" in parsed else [],
@@ -534,8 +542,9 @@ def package_confirm(
         mode = body.mode if body else None
         stats = save_rekap(db, up.id, rows, mode)
         up.status, up.row_count = UploadStatus.saved, stats["inserted"]
+        # Arsipkan SEMUA file asli dalam paket (PRD F22), bukan hanya file pertama.
         archive_upload(db, up, "presensi", periode_awal=d1, periode_akhir=d2,
-                       employee_ids={r["nik"] for r in rows})
+                       employee_ids={r["nik"] for r in rows}, extra_files=list(rows_files))
         audit.log(db, user.id, "package_confirm", {
             "upload_id": up.id, "mode": mode, "sumber": sumber, "employees": employees, **stats,
         }, _ip(request))

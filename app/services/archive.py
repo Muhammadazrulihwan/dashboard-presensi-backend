@@ -32,24 +32,18 @@ def _safe_name(original: str) -> str:
     return cleaned[:120]
 
 
-def archive_upload(
+def _archive_one(
     db: Session,
     up: Upload,
     jenis_sumber: str,
+    src: Path,
+    nama_asli: str,
     *,
-    periode_awal: date | None = None,
-    periode_akhir: date | None = None,
-    employee_ids: set[str] | None = None,
+    periode_awal: date | None,
+    periode_akhir: date | None,
+    employee_ids: set[str] | None,
 ) -> ArchivedFile | None:
-    """Salin file upload ke arsip dan catat metadatanya. Tidak commit; pemanggil yang commit.
-
-    Mengembalikan None bila file sumber sudah tidak ada (mis. sudah dibersihkan), supaya alur
-    simpan data tidak gagal hanya karena arsip tidak bisa dibuat.
-
-    `employee_ids` menyimpan Employee ID yang tercatat pada file agar arsip bisa dicari berdasarkan ID
-    karyawan (PRD F23).
-    """
-    src = Path(up.stored_path)
+    """Salin satu file ke arsip dan catat metadatanya. Tidak commit."""
     if not src.exists():
         return None
 
@@ -58,13 +52,13 @@ def archive_upload(
     folder = settings.archive_dir / f"{today:%Y}" / f"{today:%m}" / jenis_sumber
     folder.mkdir(parents=True, exist_ok=True)
 
-    dest = folder / f"{uuid.uuid4().hex}_{_safe_name(up.filename)}"
+    dest = folder / f"{uuid.uuid4().hex}_{_safe_name(nama_asli)}"
     shutil.copy2(src, dest)
 
     row = ArchivedFile(
         upload_id=up.id,
         jenis_sumber=jenis_sumber,
-        nama_asli=up.filename,
+        nama_asli=nama_asli,
         path_arsip=str(dest),
         ukuran=dest.stat().st_size,
         checksum=_checksum(dest),
@@ -78,6 +72,46 @@ def archive_upload(
     for eid in sorted({e.strip() for e in (employee_ids or set()) if e and e.strip()}):
         db.add(ArchivedFileEmployee(archive_id=row.id, employee_id=eid))
     return row
+
+
+def archive_upload(
+    db: Session,
+    up: Upload,
+    jenis_sumber: str,
+    *,
+    periode_awal: date | None = None,
+    periode_akhir: date | None = None,
+    employee_ids: set[str] | None = None,
+    extra_files: list | None = None,
+) -> ArchivedFile | None:
+    """Salin file upload ke arsip dan catat metadatanya. Tidak commit; pemanggil yang commit.
+
+    Mengembalikan None bila file sumber sudah tidak ada (mis. sudah dibersihkan), supaya alur
+    simpan data tidak gagal hanya karena arsip tidak bisa dibuat.
+
+    `employee_ids` menyimpan Employee ID yang tercatat pada file agar arsip bisa dicari berdasarkan ID
+    karyawan (PRD F23).
+
+    `extra_files` = daftar baris `upload_files` pada paket empat sumber. Bila diisi, SEMUA file paket
+    diarsipkan (PRD F22), bukan hanya file pertama. Baris pertama tetap diarsipkan dari `up.stored_path`
+    untuk kompatibilitas, lalu sisanya dari `stored_path` masing-masing.
+    """
+    first = _archive_one(
+        db, up, jenis_sumber, Path(up.stored_path), up.filename,
+        periode_awal=periode_awal, periode_akhir=periode_akhir, employee_ids=employee_ids,
+    )
+    seen = {str(Path(up.stored_path))}
+    for f in extra_files or []:
+        path = getattr(f, "stored_path", None)
+        nama = getattr(f, "nama_file", None)
+        if not path or not nama or str(Path(path)) in seen:
+            continue
+        seen.add(str(Path(path)))
+        _archive_one(
+            db, up, jenis_sumber, Path(path), nama,
+            periode_awal=periode_awal, periode_akhir=periode_akhir, employee_ids=employee_ids,
+        )
+    return first
 
 
 def trash(db: Session, row: ArchivedFile, user_id: int, alasan: str | None) -> None:

@@ -86,6 +86,10 @@ class Upload(Base):
     date_to: Mapped[date | None] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+    __table_args__ = (
+        Index("ix_uploads_created_at", "created_at"),
+    )
+
 
 class SourceKind(str, enum.Enum):
     """Empat sumber data presensi (PRD bagian 3)."""
@@ -245,6 +249,7 @@ class TimeOffRequest(Base):
 
     __table_args__ = (
         Index("ix_time_off_emp_mulai", "employee_id", "tanggal_mulai"),
+        Index("ix_time_off_request_id", "request_id"),
     )
 
 
@@ -313,6 +318,26 @@ class AppSetting(Base):
     diperbarui_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class LoginAttempt(Base):
+    """Pembatas percobaan login per (email, IP), disimpan di database (PRD Bab 12).
+
+    Sebelumnya disimpan di memori proses sehingga tidak berlaku bila backend dijalankan
+    multi-worker. Satu baris per kunci (email, IP); dihapus otomatis setelah kunci habis.
+    """
+
+    __tablename__ = "login_attempts"
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), index=True)
+    ip_address: Mapped[str] = mapped_column(String(45), default="-")
+    gagal: Mapped[int] = mapped_column(Integer, default=0)
+    # Waktu (UTC) sampai kapan kunci berlaku. Kosong/lewat berarti belum dikunci.
+    terkunci_sampai: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("email", "ip_address", name="uq_login_attempt_email_ip"),
+    )
+
+
 class AuditLog(Base):
     __tablename__ = "audit_log"
     id: Mapped[int] = mapped_column(BigId, primary_key=True)
@@ -321,6 +346,10 @@ class AuditLog(Base):
     detail: Mapped[dict | None] = mapped_column(JsonType, nullable=True)
     ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_audit_log_user_created", "user_id", "created_at"),
+    )
 
 
 # ========== Kinerja Penjualan (Rilis E) ==========
@@ -446,6 +475,7 @@ class ArchivedFile(Base):
         Index("ix_archived_files_checksum", "checksum"),
         Index("ix_archived_files_periode", "periode_awal", "periode_akhir"),
         Index("ix_archived_files_created", "created_at"),
+        Index("ix_archived_files_jenis_sumber", "jenis_sumber"),
     )
 
 

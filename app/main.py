@@ -10,6 +10,7 @@ from app.routers.audit import router as audit_router
 from app.services.bootstrap import check_production_settings, ensure_admin, ensure_departments
 from app.services.app_settings import ensure_defaults as ensure_app_settings
 from app.services.cleanup import purge_stale_uploads
+from app.services.login_limiter import purge_expired as purge_expired_login_attempts
 from app.services.rules import ensure_default_shift
 
 
@@ -25,6 +26,7 @@ async def lifespan(_: FastAPI):
         ensure_default_shift(db)
         ensure_app_settings(db)
         purge_stale_uploads(db)
+        purge_expired_login_attempts(db)
     yield
 
 

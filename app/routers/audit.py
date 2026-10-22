@@ -55,6 +55,7 @@ ACTION_LABELS = {
     "sales_preview": "Periksa File Penjualan",
     "sales_confirm": "Simpan File Penjualan",
     "sales_assessment_update": "Persetujuan Penilaian",
+    "sales_upload_delete": "Hapus Upload Penjualan",
     # Export
     "export_excel": "Export Excel Rekap",
     "export_pdf": "Export PDF Rekap",

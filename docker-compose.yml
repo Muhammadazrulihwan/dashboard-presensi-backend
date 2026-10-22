@@ -1,4 +1,7 @@
 # Hanya untuk pengembangan lokal. Jangan dipakai di produksi (password bawaan sengaja sederhana).
+# Kredensial di bawah DISAMAKAN dengan backend/.env agar `docker compose up -d` langsung cocok:
+#   DATABASE_URL=mysql+pymysql://presensi_app:admin12345@127.0.0.1:3306/presensi?charset=utf8mb4
+# Skrip init membuat database uji `presensi_test` yang dipakai `TEST_DATABASE_URL` saat menjalankan tes MySQL.
 services:
   db:
     image: mysql:8.0
@@ -6,12 +9,13 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: root
       MYSQL_DATABASE: presensi
-      MYSQL_USER: presensi
-      MYSQL_PASSWORD: presensi
+      MYSQL_USER: presensi_app
+      MYSQL_PASSWORD: admin12345
     ports:
       - "127.0.0.1:3306:3306"
     volumes:
       - mysqldata:/var/lib/mysql
+      - ./docker/mysql-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
       interval: 5s

@@ -83,11 +83,18 @@ def list_archive(
         esc = q.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         conds.append(func.lower(ArchivedFile.nama_asli).like(f"%{esc}%", escape="\\"))
     if employee_id and employee_id.strip():
-        # Pencocokan presisi (bukan substring) lewat tabel anak, agar "LS01" tidak ikut mencocokkan "LS019".
+        # Pencarian Employee ID: cocokkan sebagian (awalan/substring) agar mengetik "LS" sudah
+        # menemukan "LS019". Ditambah pencocokan presisi juga, supaya ID lengkap tetap akurat.
+        # Sebelumnya hanya cocok persis sehingga "LS" tidak menemukan apa pun.
+        eid = employee_id.strip().lower()
+        esc = eid.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         conds.append(
             ArchivedFile.id.in_(
                 select(ArchivedFileEmployee.archive_id).where(
-                    func.lower(ArchivedFileEmployee.employee_id) == employee_id.strip().lower()
+                    or_(
+                        func.lower(ArchivedFileEmployee.employee_id) == eid,
+                        func.lower(ArchivedFileEmployee.employee_id).like(f"%{esc}%", escape="\\"),
+                    )
                 )
             )
         )
